@@ -35,7 +35,9 @@ Dokumen ini menjelaskan alur perjalanan satu batch padi (contoh kode `PMD0001`) 
 ### 1.2 Aturan Utama
 
 - Alur harus berurutan dan tidak boleh melompati tahap.
-- Pengecualian yang diizinkan: mulai dari standby, alur pengulangan (Silo Kering kembali ke Dryer atau Silo Basah), dan Giling langsung ke Packing.
+- Pengecualian yang diizinkan: mulai dari standby, alur pengulangan (Silo Kering kembali ke Silo Basah), dan Giling langsung ke Packing.
+- Pengulangan selalu dimulai dari awal, yaitu Silo Basah. Ini berlaku untuk gabah masih basah maupun mesin Dryer rusak.
+- Kalau Dryer rusak, batch dikeluarkan dulu ke Silo Kering, lalu dipindahkan lagi ke Silo Basah untuk diulang.
 - Muatan satu unit fisik (Silo Basah, Dryer, Silo Kering) wajib dialirkan bersamaan dan tidak bisa dipisah.
 - Total muatan satu unit maksimal 30 ton.
 - Mesin yang sedang perbaikan tidak bisa dipakai.
@@ -128,47 +130,47 @@ IF ada stop yang belum ditutup:
 
 1. PMD0003 melewati Silo Basah 2, Dryer 3, lalu masuk Silo Kering 4.
 2. Operator mengecek kadar air. Ternyata gabah masih basah dan belum layak digiling.
-3. Operator memindahkan PMD0003 dari Silo Kering 4 kembali ke Dryer 1. Ini satu-satunya jalan mundur yang diizinkan.
-4. Sistem mencatat `recycleCount` naik menjadi 1 dan batch diberi tanda pengulangan. Alasan tercatat "Gabah Masih Basah". Tahap Dryer dan semua tahap sesudahnya direset supaya alur berjalan lagi dari sana.
-5. Setelah dikeringkan ulang, PMD0003 lanjut ke Silo Kering 2, lalu Giling, lalu Packing.
+3. Operator memindahkan PMD0003 dari Silo Kering 4 kembali ke Silo Basah. Pengulangan selalu dimulai dari awal, yaitu Silo Basah.
+4. Sistem mencatat `recycleCount` naik menjadi 1 dan batch diberi tanda pengulangan. Alasan tercatat "Gabah Masih Basah". Semua tahap dari Silo Basah dan seterusnya direset supaya alur berjalan lagi dari awal.
+5. PMD0003 diproses ulang: Silo Basah 1, Dryer 1, Silo Kering 2, lalu Giling dan Packing.
 
-Jejak perjalanan di riwayat: `Silo Basah 2 > Dryer 3 > Silo Kering 4 > (ULANG) Dryer 1 > Silo Kering 2 > Giling (PK) > Packing`.
+Jejak perjalanan di riwayat: `Silo Basah 2 > Dryer 3 > Silo Kering 4 > (ULANG) Silo Basah 1 > Dryer 1 > Silo Kering 2 > Giling (PK) > Packing`.
 
 **Logika IF-ELSE**
 
 ```text
-isRecycle = (currentStep == 'C-silo')
-            AND (target == 'B-dryer' OR target == 'A-silo')
+isRecycle = (currentStep == 'C-silo') AND (target == 'A-silo')
+# pengulangan selalu kembali ke Silo Basah (awal)
 
 IF isRecycle:
     lewati aturan "tidak boleh terlewati"     # mundur diperbolehkan
     FOR EACH item IN grup:
         recycleCount += 1
         isRecycled = true
-        recycleLog.push({ from: Silo Kering 4, to: Dryer 1,
+        recycleLog.push({ from: Silo Kering 4, to: Silo Basah 1,
                           reason: "Gabah Masih Basah", timestamp: now })
 
     FOR EACH tahap IN SUBSTEPS:
-        IF index(tahap) >= index(target):
-            passed = false                    # direset, jalan ulang dari sini
+        IF index(tahap) >= index('A-silo'):
+            passed = false                    # direset, jalan ulang dari awal
             completedAt = null
-    startedAt[target] = now
+    startedAt['A-silo'] = now
 ELSE:
     alur maju biasa
 ```
 
 ---
 
-### Cerita 4: Basahnya Parah, Mundur sampai Silo Basah, Ulang Dua Kali
+### Cerita 4: Basahnya Parah, Ulang Dua Kali dari Silo Basah
 
 *PMD0004 (8 ton), padi panen habis hujan*
 
 **Alur cerita**
 
 1. PMD0004 masuk Silo Basah 1, lalu Dryer 2, lalu Silo Kering 1.
-2. Ulang ke-1: dicek masih basah, dikembalikan ke Dryer 4. `recycleCount = 1`.
-3. Kembali ke Silo Kering 3, dicek lagi, masih basah juga.
-4. Ulang ke-2: kali ini dikembalikan sampai Silo Basah 2 karena kadar airnya sangat tinggi. `recycleCount = 2` dan `recycleLog` berisi dua entri lengkap dengan unit asal, unit tujuan, dan jam.
+2. Ulang ke-1: dicek masih basah, dikembalikan ke Silo Basah 3 (mulai dari awal). `recycleCount = 1`.
+3. PMD0004 diproses ulang: Dryer 4, lalu Silo Kering 3. Dicek lagi, masih basah juga.
+4. Ulang ke-2: dikembalikan lagi ke Silo Basah 2 dan mulai dari awal lagi. `recycleCount = 2` dan `recycleLog` berisi dua entri lengkap dengan unit asal, unit tujuan, dan jam.
 5. Setelah dua kali ulang, akhirnya lolos sampai Giling dan Packing.
 
 Di rekap, PMD0004 terlihat jelas sebagai batch bermasalah: durasi total jauh lebih panjang dan ada dua kali pengulangan.
@@ -176,11 +178,13 @@ Di rekap, PMD0004 terlihat jelas sebagai batch bermasalah: durasi total jauh leb
 **Logika IF-ELSE**
 
 ```text
-# Ulang ke-1: Silo Kering -> Dryer
+# Ulang ke-1: Silo Kering -> Silo Basah
 isRecycle = true, recycleCount = 1
+reset passed untuk SEMUA tahap dari Silo Basah dst.
+# diproses ulang: Silo Basah -> Dryer -> Silo Kering (alur maju biasa)
 
 # ...dicek lagi masih basah -> Ulang ke-2: Silo Kering -> Silo Basah
-IF target == 'A-silo':          # mundur paling jauh, tetap dianggap recycle
+IF currentStep == 'C-silo' AND target == 'A-silo':
     isRecycle = true
     recycleCount = 2
     reset passed untuk SEMUA tahap dari Silo Basah dst.
@@ -287,37 +291,53 @@ IF target == 'D-mix' AND mixBusy AND NOT isQueue:
 
 ---
 
-### Cerita 7: Mesin Rusak, Batch Harus Pindah Unit
+### Cerita 7: Dryer Rusak, Batch Dikeluarkan ke Silo Kering lalu Diulang dari Silo Basah
 
-*PMD0010 (10 ton) mau ke Dryer 2*
+*PMD0010 (10 ton) sedang di Dryer 2*
 
 **Alur cerita**
 
-1. Teknisi menandai Dryer 2 sedang perbaikan dengan alasan "Kerusakan Motor". Di denah, Dryer 2 berubah merah dan hitungan Mesin Kendala bertambah.
-2. Operator mencoba mengalirkan PMD0010 ke Dryer 2. Ditolak: *"Mesin Dryer 2 sedang dalam perbaikan (Kerusakan Motor)"*.
-3. Kalau operator tidak memilih unit, sistem otomatis melewati Dryer 2 dan memilih unit kosong berikutnya, misalnya Dryer 3.
-4. Setelah motor diganti, teknisi menghapus status perbaikan. Dryer 2 kembali bisa dipakai.
+1. Motor Dryer 2 rusak saat PMD0010 sedang dikeringkan. Teknisi menandai Dryer 2 sebagai perbaikan dengan alasan "Kerusakan Motor". Di denah, Dryer 2 berubah merah dan hitungan Mesin Kendala bertambah. Batch dihentikan (status terhenti) dan tetap dihitung mengisi Dryer 2.
+2. Batch tidak bisa dibiarkan di Dryer 2. Operator memindahkan PMD0010 dari Dryer 2 ke Silo Kering (alur maju biasa). Kalau ada batch lain di Dryer 2, semuanya ikut pindah bersama.
+3. Dari Silo Kering, PMD0010 dipindahkan lagi ke Silo Basah untuk diulang dari awal. Sistem mencatat pengulangan dengan alasan "Dryer Rusak", `recycleCount` naik 1, dan semua tahap direset.
+4. Saat PMD0010 mulai diproses ulang dan mau masuk Dryer, sistem otomatis melewati Dryer 2 yang masih rusak dan memilih unit kosong berikutnya, misalnya Dryer 3. Kalau operator memilih Dryer 2 secara manual, sistem menolak.
+5. Setelah motor diganti, teknisi menghapus status perbaikan dan Dryer 2 kembali bisa dipakai.
+
+Urutan yang harus dilalui: `Dryer (rusak) > Silo Kering > Silo Basah > Dryer (unit lain) > seterusnya`.
 
 **Logika IF-ELSE**
 
 ```text
-# Saat operator pilih unit manual
-IF unit dipilih AND isUnderMaintenance(target, unit):
+# 1. Dryer rusak
+markMaintenance("Dryer 2", reason = "Kerusakan Motor")
+item.status = 'stopped'          # batch terhenti, tetap mengisi Dryer 2
+
+# 2. Batch dikeluarkan ke Silo Kering (alur maju normal)
+IF tgt == cur + 1:               # Dryer -> Silo Kering
+    BOLEH
+    grup = coLocated(item)       # semua batch di Dryer 2 ikut pindah
+    IF unit Silo Kering tujuan maintenance -> TOLAK / pilih unit lain
+    IF isi Silo Kering + totalGrup > 30 -> TOLAK / pilih unit lain
+    tutup stop yang masih terbuka
+
+# 3. Dari Silo Kering kembali ke Silo Basah (pengulangan)
+isRecycle = (currentStep == 'C-silo' AND target == 'A-silo')
+IF isRecycle:
+    recycleCount += 1
+    recycleLog.push({ reason: "Dryer Rusak", timestamp: now })
+    reset passed untuk SEMUA tahap dari Silo Basah dst.
+
+# 4. Saat masuk Dryer lagi
+IF unit dipilih AND isUnderMaintenance('B-dryer', unit):
     TOLAK "Dryer 2 sedang perbaikan (Kerusakan Motor)"
 
-# Saat auto-pilih
-FOR u = 1..jumlahUnit:
-    IF isUnderMaintenance(target, "Dryer u"):
-        CONTINUE                        # lewati unit rusak
+FOR u = 1..jumlahUnit:           # auto-pilih
+    IF isUnderMaintenance('B-dryer', "Dryer u"):
+        CONTINUE                 # lewati unit rusak
     ...cek kosong / sisa kapasitas...
 
-# Giling / Mix tunggal
+# Giling / Mix tunggal rusak
 IF maintenance -> TOLAK (tidak ada unit alternatif)
-
-# Kalau semua unit di tahap itu rusak dan tidak ada yang muat
-chosen = null -> FALLBACK ke unit 1
-# PERHATIAN: bisa memilih unit rusak; hanya tertahan kalau validasi
-# maintenance pada blok validasi ikut berjalan
 ```
 
 ---
@@ -364,12 +384,13 @@ ELSE:
 1. 06:30 – Masuk Silo Basah 3, lalu 08:00 ke Dryer 1.
 2. 09:00 – Dryer terhenti karena Overheat. Setelah didinginkan, 09:50 dilanjutkan (henti 50 menit).
 3. 12:00 – Masuk Silo Kering 5. Dicek, gabah masih basah.
-4. 12:30 – Ulang ke-1: kembali ke Dryer 4, `recycleCount = 1`.
-5. 16:00 – Kembali ke Silo Kering 2, kali ini kering.
-6. 17:00 – Mau masuk Giling, tetapi sedang dipakai batch lain, jadi antri.
-7. 18:30 – Giling kosong, PMD0012 otomatis aktif (tipe PK).
-8. 20:00 – Terhenti sebentar karena Ganti Sparepart/Vanbelt, lalu lanjut.
-9. 21:00 – Lompat Mix, langsung Packing, lalu Selesai.
+4. 12:30 – Ulang ke-1: kembali ke Silo Basah 2 (mulai dari awal), `recycleCount = 1`.
+5. 13:00 – Diproses ulang ke Dryer 4.
+6. 16:00 – Masuk Silo Kering 2, kali ini kering.
+7. 17:00 – Mau masuk Giling, tetapi sedang dipakai batch lain, jadi antri.
+8. 18:30 – Giling kosong, PMD0012 otomatis aktif (tipe PK).
+9. 20:00 – Terhenti sebentar karena Ganti Sparepart/Vanbelt, lalu lanjut.
+10. 21:00 – Lompat Mix, langsung Packing, lalu Selesai.
 
 Di Mutasi Riwayat, PMD0012 tampil dengan jejak perjalanan panjang, dua kali stop beserta alasan dan durasinya, satu kali pengulangan, dan satu kali antri.
 
@@ -381,8 +402,9 @@ Di Mutasi Riwayat, PMD0012 tampil dengan jejak perjalanan panjang, dua kali stop
 09:00  Stop "Overheat"                status = stopped
 09:50  Lanjutkan                      duration = 50 menit, status = active
 12:00  -> Silo Kering 5               tgt == cur+1: BOLEH
-12:30  -> Dryer 4 (ulang)             isRecycle = true -> recycleCount = 1
-                                      reset passed dari Dryer dst.
+12:30  -> Silo Basah 2 (ulang)        isRecycle = true -> recycleCount = 1
+                                      reset passed dari Silo Basah dst.
+13:00  -> Dryer 4                     tgt == cur+1: BOLEH
 16:00  -> Silo Kering 2               tgt == cur+1: BOLEH
 17:00  -> Giling                      IF gilingBusy: isQueued = true, queuedAt = now
                                       ELSE: langsung jalan
@@ -431,4 +453,5 @@ START
 - Auto-pilih unit memiliki fallback ke unit 1 tanpa cek kapasitas dan tanpa cek maintenance. Jika semua unit penuh atau rusak, hasilnya bisa melebihi 30 ton atau memilih unit yang sedang perbaikan.
 - Opsi antri (`isQueue`) dari pengguna bisa memaksa batch masuk antrian walau mesin kosong. Antrian baru dibangunkan saat ada batch yang keluar dari Giling atau Mix, sehingga batch tersebut bisa tertahan.
 - Alur recycle tidak mengecek status maintenance unit tujuan kecuali unit dipilih manual.
+- Aturan pabrik menyatakan pengulangan hanya kembali ke Silo Basah. Kode aplikasi saat ini masih mengizinkan Silo Kering kembali ke Dryer (`isRecycle` bernilai true untuk target `B-dryer` dan `A-silo`), jadi perlu disesuaikan agar hanya target `A-silo` yang diterima.
 - Lompatan Giling langsung ke Packing adalah pengecualian yang disengaja dan bukan bug.
