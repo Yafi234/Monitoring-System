@@ -1,0 +1,811 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Monitoring Alur Proses Mesin</title>
+  <meta name="description" content="Aplikasi pemantauan alur proses mesin produksi: Silo Basah (4), Dryer (5), Silo Kering (9), Mesin Giling (PK/Glosor), Mix &amp; Packing.">
+  
+  <!-- Modern Clean Font -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+  
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Interactive Plant Floor Plan (Denah Mesin Pabrik Sesuai Sketsa User) -->
+    <div class="floor-plan-card" id="factoryFloorPlan">
+      <div class="floor-plan-top-bar">
+        <div class="floor-plan-title-box">
+          <div class="floor-plan-title">
+            <span class="pulse-radar"></span>
+            <span>TATA LETAK &amp; MONITORING MESIN PABRIK (LIVE SCADA)</span>
+          </div>
+          <div class="floor-plan-sub">
+            Denah mesin visual: pantau mesin yang sedang dipakai, mesin yang mengalami kendala, dan antrian giling.
+          </div>
+        </div>
+
+        <div class="floor-top-controls">
+          <!-- Fit Switcher: Pas di Layar (Tanpa Geser) vs Mode Geser -->
+          <div class="fit-switcher-pill" title="Atur Tampilan: Muat 1 Layar Penuh (Tanpa Geser) vs Mode Geser Lebar">
+            <button type="button" class="fit-btn active" id="btnFitScreen" onclick="setFloorFitMode('fit')" title="Muat seluruh denah langsung dalam 1 layar tanpa digeser">
+              Pas Layar
+            </button>
+            <button type="button" class="fit-btn" id="btnScrollScreen" onclick="setFloorFitMode('scroll')" title="Mode lebar dengan scroll geser horizontal">
+              Mode Geser
+            </button>
+          </div>
+
+          <!-- Zoom / Skala Denah -->
+          <div class="zoom-pill" title="Atur Skala Ukuran Denah Mesin">
+            <button type="button" class="zoom-btn" onclick="adjustFloorZoom(-0.05)" title="Perkecil (−)">−</button>
+            <span class="zoom-level" id="zoomLevelDisplay">100%</span>
+            <button type="button" class="zoom-btn" onclick="adjustFloorZoom(0.05)" title="Perbesar (+)">+</button>
+            <button type="button" class="zoom-btn reset" onclick="resetFloorZoom()" title="Reset Skala 100%">↺</button>
+          </div>
+
+          <!-- Status Mesin Summary -->
+          <div class="floor-status-summary">
+            <div class="status-summary-item running" id="summaryRunning">
+              <span class="summary-dot running-dot"></span>
+              <span class="summary-count" id="countRunning">0</span> Mesin Aktif
+            </div>
+            <div class="status-summary-item stopped" id="summaryStopped" onclick="openMaintenanceManagerModal()" style="cursor: pointer;" title="Klik untuk buka denah & kelola perbaikan mesin">
+              <span class="summary-dot stopped-dot"></span>
+              <span class="summary-count" id="countStopped">0</span> Mesin Kendala
+            </div>
+            <div class="status-summary-item standby" id="summaryStandby">
+              <span class="summary-dot standby-dot"></span>
+              <span class="summary-count" id="countStandby">21</span> Mesin Standby
+            </div>
+          </div>
+
+          <!-- Action Buttons: Tambah Barang, Cek Barang Masuk, Cetak Rekap, Mode Tema & Reset -->
+          <button id="btnAddNew" class="btn btn-add" title="Tambah Barang Masuk Baru">
+            <span class="btn-icon">+</span> Tambah Barang Masuk
+          </button>
+          <button type="button" id="btnOpenMaintManager" class="btn btn-outline" onclick="openMaintenanceManagerModal()" title="Buka Denah Khusus Perbaikan Mesin & Input Kendala" style="border-color: rgba(239, 68, 68, 0.45); color: #fca5a5;">
+            Perbaikan Mesin <span id="maintTopBadge" class="tab-badge" style="background:#ef4444; color:#fff; display:none; margin-left:4px; font-size:10px; padding:1px 6px;">0</span>
+          </button>
+          <button type="button" id="btnScrollToKode" class="btn btn-outline" onclick="scrollToKodePenjelasan('active')" title="Lihat Penjelasan Kode Barang Masuk di Bawah (PMD0001...)">
+            Cek Kode
+          </button>
+          <button type="button" id="btnOpenMutasi" class="btn btn-outline" onclick="scrollToKodePenjelasan('mutasi')" title="Lihat Rekap Mutasi Riwayat Barang Selesai">
+            Mutasi Riwayat
+          </button>
+          <button id="btnExport" class="btn btn-outline" title="Cetak Rekap Posisi & Waktu">
+            Cetak Rekap
+          </button>
+          <div class="theme-switcher-pill" id="themeSwitcher" title="Pilih Mode Tampilan">
+            <button type="button" class="theme-btn" id="themeBtnLight" onclick="setTheme('light')" title="Mode Terang (Soft Pastel Aurora)">
+              Terang
+            </button>
+            <button type="button" class="theme-btn active" id="themeBtnDark" onclick="setTheme('dark')" title="Mode Gelap (Dark Aurora Glass)">
+              Gelap
+            </button>
+          </div>
+          <button id="btnResetData" type="button" class="btn btn-subtle" onclick="openResetSecurityModal()" title="Reset data pabrik (Perlu Sandi Supervisor)">
+            Reset
+          </button>
+        </div>
+      </div>
+
+      <!-- Floor Plan Main Stage: Bisa Mode Grid Bawah, atau Split Samping (16:9 Fit) -->
+      <div class="floor-plan-viewport layout-bottom" id="floorPlanViewport">
+        <!-- Main Pipeline Floor Canvas (Rendered dynamically by app.js) -->
+        <div class="floor-canvas" id="floorCanvas"></div>
+
+        <!-- Section Penjelasan Kode Barang Masuk (Compact Live Dock 16:9 Fit) -->
+        <div class="penjelasan-kode-dock" id="penjelasanKodeCard">
+          <div class="logbook-header-bar">
+            <div class="logbook-title-box">
+              <div class="logbook-title">
+                
+                <span>PENJELASAN KODE BARANG</span>
+                <span class="logbook-count-badge" id="logPadiTotalCount">0 Padi</span>
+              </div>
+              <div class="logbook-sub">
+                Format: <strong>Kode (PMD0001..) : Supir • Truk • Jenis Padi</strong>
+              </div>
+            </div>
+
+            <!-- Tab Switcher: Kartu Mesin Aktif VS Mutasi Riwayat Selesai -->
+            <div class="log-view-tabs" id="logViewTabs">
+              <button type="button" class="log-tab-btn active" id="tabActiveLog" onclick="switchLogbookView('active')" title="Lihat Kartu Alur Mesin yang Sedang Aktif / Berjalan">
+                Mesin Aktif
+                <span class="tab-badge" id="badgeActiveCount">0</span>
+              </button>
+              <button type="button" class="log-tab-btn" id="tabMutasiLog" onclick="switchLogbookView('mutasi')" title="Lihat Riwayat Mutasi Barang yang Sudah Selesai Diproses">
+                Mutasi Riwayat
+                <span class="tab-badge mutasi-badge" id="badgeMutasiCount">0</span>
+              </button>
+            </div>
+
+            <div class="logbook-controls" id="logbookControlsBar">
+              <!-- Search Input -->
+              <div class="log-search-wrapper">
+                
+                <input type="text" id="logPadiSearchInput" placeholder="Cari kode (PMD..), supir, truk..." oninput="handleLogPadiSearch(this.value)">
+                <button type="button" class="btn-clear-search" id="btnClearLogSearch" onclick="clearLogPadiSearch()" title="Hapus pencarian">&times;</button>
+              </div>
+
+              <!-- Filter Pills -->
+              <div class="log-filter-pills" id="logFilterPills">
+                <button type="button" class="log-filter-btn active" data-filter="all" onclick="setLogPadiFilter('all')">Semua</button>
+                <button type="button" class="log-filter-btn" data-filter="active" onclick="setLogPadiFilter('active')">🟢 Proses</button>
+                <button type="button" class="log-filter-btn" data-filter="standby" onclick="setLogPadiFilter('standby')">Standby</button>
+                <button type="button" class="log-filter-btn" data-filter="completed" onclick="setLogPadiFilter('completed')">Selesai</button>
+              </div>
+
+              <!-- Posisi Layout Switcher: Bawah / Samping / Sembunyi -->
+              <div class="layout-switch-pills" id="layoutSwitchPills">
+                <button type="button" class="layout-btn active" id="btnLayoutBottom" onclick="setKodeLayout('bottom')" title="Tampilan Grid Kartu Ringkas di Bawah">Bawah</button>
+                <button type="button" class="layout-btn" id="btnLayoutSide" onclick="setKodeLayout('side')" title="Tampilan Panel Samping (Sesuai Sketsa 16:9)">Samping</button>
+                <button type="button" class="layout-btn" id="btnLayoutHide" onclick="setKodeLayout('hidden')" title="Sembunyikan Panel Kode">▲ Tutup</button>
+              </div>
+
+              <!-- Kolom Preset: Auto (Pentok Penuh) / 5 / 6 / 7 Kolom -->
+              <div class="col-count-pills" id="colCountPills" title="Pilih Jumlah Kolom per Baris (Auto = Pentok Penuh 5-7)">
+                <span class="col-pill-label">Kolom:</span>
+                <button type="button" class="col-btn active" data-cols="auto" onclick="setGridColumns('auto')" title="Otomatis Penuh (Pentok 5-7 kartu per baris)">Auto</button>
+                <button type="button" class="col-btn" data-cols="5" onclick="setGridColumns('5')" title="Pas 5 Kolom">5</button>
+                <button type="button" class="col-btn" data-cols="6" onclick="setGridColumns('6')" title="Pas 6 Kolom">6</button>
+                <button type="button" class="col-btn" data-cols="7" onclick="setGridColumns('7')" title="Pas 7 Kolom">7</button>
+              </div>
+
+              <button type="button" class="btn btn-add btn-sm" onclick="openAddModal()" style="font-size: 11px; padding: 5px 10px;">
+                <span class="btn-icon">+</span> Tambah Padi
+              </button>
+            </div>
+          </div>
+
+          <!-- Tampilan Lembar Catatan Penjelasan Kode (Grid Ringkas 16:9 Fit) -->
+          <div class="logbook-sheet-container" id="logPadiSheetList">
+            <!-- Rendered dynamically by renderLogPadiSheet() in app.js -->
+          </div>
+
+          <!-- Tampilan Tabel Mutasi Riwayat Selesai (Warehouse & Outgoing Mutation Log) -->
+          <div class="mutasi-sheet-container" id="mutasiSheetContainer" style="display: none;">
+            <!-- Rendered dynamically by renderMutasiRiwayat() in app.js -->
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal Riwayat Waktu Proses (Clean & Simple) -->
+  <div class="modal-backdrop" id="detailModal">
+    <div class="modal-dialog">
+      <div class="modal-head">
+        <div class="modal-title-group">
+          <div class="modal-code-badge" id="modalCode">X1</div>
+          <div>
+            <h2 class="modal-h2" id="modalName">Barang Masuk 1</h2>
+            <p class="modal-meta" id="modalMeta">Masuk: 25 Sep 2026, 08:00 WIB</p>
+          </div>
+        </div>
+        <button class="btn-close" id="btnCloseModal" aria-label="Tutup">&times;</button>
+      </div>
+
+      <div class="modal-content">
+        <!-- Simple Status Card -->
+        <div class="summary-strip" style="grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));">
+          <div class="summary-item">
+            <span class="summary-label">Posisi Saat Ini</span>
+            <span class="summary-value highlight-green" id="modalPosisi">D • Bawah (Sedang Berjalan)</span>
+          </div>
+          <div class="summary-item">
+            <span class="summary-label">Supir</span>
+            <span class="summary-value" id="modalSupir">Supri</span>
+          </div>
+          <div class="summary-item">
+            <span class="summary-label">No. Truk</span>
+            <span class="summary-value" id="modalTruk">B 9123 TG</span>
+          </div>
+          <div class="summary-item">
+            <span class="summary-label">Jenis Padi</span>
+            <span class="summary-value" id="modalJenis">Inpari 32</span>
+          </div>
+          <div class="summary-item">
+            <span class="summary-label">Berat / Tonase</span>
+            <span class="summary-value" id="modalTonase">10.0 Ton</span>
+          </div>
+        </div>
+
+        <div class="timeline-header">
+          <span>Riwayat Waktu Penyelesaian per Tahap</span>
+        </div>
+
+        <div id="modalTroubleBanner"></div>
+
+        <!-- Clean Step Cards -->
+        <div class="simple-timeline" id="modalTimeline">
+          <!-- Rendered by JS -->
+        </div>
+
+        <div class="modal-actions">
+          <button id="btnAdvanceNext" class="btn btn-advance">
+            Lanjut ke Tahap Berikutnya
+          </button>
+          <button id="btnModalStop" class="btn btn-stop-action" style="padding: 9px 16px; font-size: 13px;" title="Hentikan alur mesin dan input penjelasan kendala">
+            Stop Mesin (Terhenti)
+          </button>
+          <button id="btnModalResume" class="btn btn-resume-action" style="padding: 9px 16px; font-size: 13px; display: none;" title="Nyalakan kembali mesin setelah selesai perbaikan">
+            Nyalakan Kembali (Resume)
+          </button>
+          <button id="btnMarkComplete" class="btn btn-complete">
+            Selesai
+          </button>
+          <button id="btnEditBatchFromDetail" class="btn btn-outline">
+            Ubah Data Padi
+          </button>
+          <button id="btnDeleteBatch" class="btn btn-del">
+            Hapus
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal Tambah Barang Masuk (Sesuai Format Logbook: Kode A1, Supir, Truk, Jenis Padi) -->
+  <div class="modal-backdrop" id="addModal">
+    <div class="modal-dialog modal-small">
+      <div class="modal-head">
+        <h2 class="modal-h2">Tambah Barang Masuk (Padi / Gabah)</h2>
+        <button class="btn-close" id="btnCloseAddModal">&times;</button>
+      </div>
+
+      <form id="addForm" class="modal-content">
+        <!-- Banner Pintas Padi Standby yang Sudah Ada -->
+        <div id="addModalStandbyBanner" style="display: none; margin-bottom: 14px;"></div>
+
+        <div class="input-row">
+          <div class="input-field">
+            <label for="inputKode">Kode Barang (Contoh: PMD0001, PMD0002)</label>
+            <input type="text" id="inputKode" required placeholder="PMD0001" maxlength="15" style="font-weight: 800; font-family: 'JetBrains Mono', monospace; text-transform: uppercase;">
+          </div>
+          <div class="input-field">
+            <label for="inputSupir">Nama Supir / Pengemudi</label>
+            <input type="text" id="inputSupir" placeholder="Contoh: Pak Supri / Hendra" required>
+          </div>
+        </div>
+
+        <div class="input-row">
+          <div class="input-field">
+            <label for="inputTruk">No. Truk / Plat Polisi</label>
+            <input type="text" id="inputTruk" placeholder="Contoh: B 9123 TG / Truk 01" required style="font-family: 'JetBrains Mono', monospace; text-transform: uppercase;">
+          </div>
+          <div class="input-field">
+            <label for="inputJenisPadi">Jenis Padi / Gabah</label>
+            <input type="text" id="inputJenisPadi" list="jenisPadiList" placeholder="Pilih atau ketik (Contoh: Inpari 32)" required>
+            <datalist id="jenisPadiList">
+              <option value="Inpari 32">
+              <option value="Ciherang">
+              <option value="IR 64">
+              <option value="Ketan Putih">
+              <option value="Pandan Wangi">
+              <option value="Mekongga">
+              <option value="Situ Bagendit">
+              <option value="Beras Merah">
+            </datalist>
+          </div>
+        </div>
+
+        <div class="input-row">
+          <div class="input-field">
+            <label for="inputTonase">Berat / Tonase (Ton)</label>
+            <input type="number" step="0.1" id="inputTonase" placeholder="10.0" value="10.0" required>
+          </div>
+          <div class="input-field">
+            <label for="inputNama">Label / Keterangan Batch</label>
+            <input type="text" id="inputNama" placeholder="Otomatis: Padi PMD0001 - Supri">
+          </div>
+        </div>
+
+        <div class="input-field">
+          <label for="inputStartStep">Status Awal / Posisi Mulai</label>
+          <select id="inputStartStep">
+            <option value="A-silo">Kategori A: Silo Basah (1 - 4 • @30T)</option>
+            <option value="B-dryer">Kategori B: Dryer (1 - 5 • @30T)</option>
+            <option value="C-silo">Kategori C: Silo Kering (1 - 9 • @30T)</option>
+            <option value="C-giling">Kategori C: Mesin Giling (1 Unit)</option>
+            <option value="D-mix">Kategori D: Mix</option>
+            <option value="D-packing">Kategori D: Packing</option>
+            <option value="standby">Standby (Kosong - Belum Masuk Jalur Mesin)</option>
+          </select>
+        </div>
+
+        <div class="input-field" id="targetUnitContainer" style="display: none; margin-top: 10px;">
+          <label for="inputTargetUnit" id="labelTargetUnit" style="display:flex; justify-content:space-between; align-items:center;">
+            <span>Unit Mesin Spesifik</span>
+            <span id="targetUnitCapacityBadge" style="font-size: 11px; color: #10b981; font-weight: 700;"></span>
+          </label>
+          <select id="inputTargetUnit" style="font-family: inherit;">
+            <!-- Populated dynamically -->
+          </select>
+          <div id="targetUnitHint" style="font-size: 11px; color: var(--text-lavender); margin-top: 4px; line-height: 1.35;"></div>
+        </div>
+
+        <div class="input-field" id="gilingTypeContainer" style="display: none; margin-top: 10px;">
+          <label for="inputGilingType">Tipe Giling</label>
+          <select id="inputGilingType">
+            <option value="PK">PK (Pecah Kulit)</option>
+            <option value="Glosor">Glosor (Blosor)</option>
+          </select>
+        </div>
+
+        <div class="form-buttons">
+          <button type="button" class="btn btn-outline" id="btnCancelAdd">Batal</button>
+          <button type="submit" class="btn btn-add">Simpan Barang Masuk</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal Konfirmasi Alur Bertahap (Mencegah Kesalahan & Kelewatan) -->
+  <div class="modal-backdrop" id="stepConfirmModal">
+    <div class="modal-dialog modal-small">
+      <div class="modal-head">
+        <h2 class="modal-h2" id="stepModalTitle">Konfirmasi Alur Bertahap</h2>
+        <button class="btn-close" id="btnCloseStepModal">&times;</button>
+      </div>
+
+      <div class="modal-content">
+        <div id="stepSkipWarning" class="warning-box" style="display: none; background: rgba(239, 68, 68, 0.12); border-color: rgba(239, 68, 68, 0.35);">
+          <div class="warning-icon" style="font-size: 22px;">⛔</div>
+          <div class="warning-text">
+            <strong style="color: #f87171;">Tahapan Tidak Boleh Terlewati!</strong>
+            <p id="stepWarningMsg">Alur proses permesinan wajib dijalankan secara berurutan agar standar alur produksi terpenuhi.</p>
+          </div>
+        </div>
+
+        <div class="step-transition-card">
+          <div class="transition-node from-node">
+            <span class="node-label">Tahap Saat Ini (Selesai)</span>
+            <span class="node-name" id="stepCurrentName">Tahap A: Silo Basah</span>
+            <span class="node-time" id="stepCurrentTime">Dicatat selesai jam sekarang</span>
+          </div>
+
+          <div class="transition-arrow">↓</div>
+
+          <div class="transition-node to-node">
+            <span class="node-label" id="stepNextLabel">Tahap Berikutnya (Wajib Bertahap)</span>
+            <span class="node-name highlight-green" id="stepNextName">Tahap A: Silo Basah</span>
+            <span class="node-time">Otomatis aktif</span>
+          </div>
+        </div>
+
+        <!-- Container Pemilihan Nomor Mesin Unit / Opsi Giling PK vs Glosor -->
+        <div id="machineSelectContainer" style="margin-top: 14px;"></div>
+
+        <div class="modal-actions" id="stepModalActions">
+          <button id="btnConfirmStep" class="btn btn-advance" style="width: 100%;">
+            Selesaikan & Lanjut ke Tahap Berikutnya
+          </button>
+          <button type="button" id="btnQueueMixStep" class="btn" onclick="confirmQueueMix()" style="display: none; width: 100%; font-size: 13.5px; font-weight: 700; padding: 11px 18px; border-radius: 10px; background: linear-gradient(135deg, #d97706, #f59e0b); color: #fff; cursor: pointer; border: none; box-shadow: 0 4px 14px rgba(245, 158, 11, 0.35);">
+            Masuk Antrian Mix
+          </button>
+          <button type="button" id="btnBackOnlyStep" class="btn btn-outline" onclick="closeStepConfirmModal()" style="display: none; width: 100%; font-size: 13.5px; font-weight: 700; padding: 11px 18px; border-radius: 10px;">
+            Kembali
+          </button>
+        </div>
+
+        <div id="stepSkipActions" style="display: none; display: flex; flex-direction: column; gap: 8px;">
+          <button id="btnFollowSequence" class="btn btn-advance" style="width: 100%;">
+            Ikuti Alur Bertahap (Wajib)
+          </button>
+          <button id="btnCancelStep" class="btn btn-subtle" style="width: 100%;">
+            Batal
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal Ubah Nama & Informasi Barang (Supir, Truk, Jenis Padi, Tonase) -->
+  <div class="modal-backdrop" id="editModal">
+    <div class="modal-dialog modal-small">
+      <div class="modal-head">
+        <h2 class="modal-h2">Ubah Data Barang &amp; Truk</h2>
+        <button class="btn-close" id="btnCloseEditModal">&times;</button>
+      </div>
+
+      <form id="editForm" class="modal-content">
+        <input type="hidden" id="editItemId">
+
+        <div class="input-row">
+          <div class="input-field">
+            <label for="editKode">Kode Barang (Contoh: PMD0001, PMD0002)</label>
+            <input type="text" id="editKode" required placeholder="PMD0001" maxlength="15" style="font-weight: 800; font-family: 'JetBrains Mono', monospace; text-transform: uppercase;">
+          </div>
+          <div class="input-field">
+            <label for="editSupir">Nama Supir</label>
+            <input type="text" id="editSupir" placeholder="Contoh: Pak Supri">
+          </div>
+        </div>
+
+        <div class="input-row">
+          <div class="input-field">
+            <label for="editTruk">No. Truk / Plat Polisi</label>
+            <input type="text" id="editTruk" placeholder="Contoh: B 9123 TG" style="font-family: 'JetBrains Mono', monospace; text-transform: uppercase;">
+          </div>
+          <div class="input-field">
+            <label for="editJenisPadi">Jenis Padi / Gabah</label>
+            <input type="text" id="editJenisPadi" list="jenisPadiList" placeholder="Contoh: Inpari 32">
+          </div>
+        </div>
+
+        <div class="input-row">
+          <div class="input-field">
+            <label for="editTonase">Berat / Tonase (Ton)</label>
+            <input type="number" step="0.1" id="editTonase" placeholder="10.0">
+          </div>
+          <div class="input-field">
+            <label for="editNama">Label / Keterangan Batch</label>
+            <input type="text" id="editNama" placeholder="Contoh: Padi PMD0001 - Supri">
+          </div>
+        </div>
+
+        <div class="form-buttons" style="display: flex; justify-content: space-between; align-items: center;">
+          <button type="button" class="btn btn-del" id="btnDeleteFromEdit" style="background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.4); color: #f87171; padding: 7px 12px; font-size: 12px;">
+            Hapus Baris
+          </button>
+          <div style="display: flex; gap: 8px;">
+            <button type="button" class="btn btn-outline" id="btnCancelEdit">Batal</button>
+            <button type="submit" class="btn btn-add">Simpan Perubahan</button>
+          </div>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal Input Penjelasan Hentikan Mesin (Terhenti) -->
+  <div class="modal-backdrop" id="stopModal">
+    <div class="modal-dialog modal-small">
+      <div class="modal-head">
+        <h2 class="modal-h2">⚠️ Hentikan Mesin (Terhenti)</h2>
+        <button class="btn-close" id="btnCloseStopModal">&times;</button>
+      </div>
+
+      <form id="stopForm" class="modal-content">
+        <input type="hidden" id="stopItemId">
+
+        <div style="background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.3); border-radius: 8px; padding: 10px 14px; font-size: 13px; color: #f87171;">
+          Alur yang akan dihentikan: <strong id="stopStepInfo" style="color: #ffffff;">X1 • Tahap A (Silo Basah)</strong>
+        </div>
+
+        <div class="input-field">
+          <label>Pilih Penjelasan Singkat (Klik Salah Satu)</label>
+          <div class="reason-chips" id="stopReasonChips">
+            <button type="button" class="chip-btn chip-danger" onclick="selectStopChip('Bahan Macet')">Bahan Macet</button>
+            <button type="button" class="chip-btn chip-danger" onclick="selectStopChip('Ganti Sparepart/Vanbelt')">Ganti Sparepart</button>
+            <button type="button" class="chip-btn chip-danger" onclick="selectStopChip('Overheat / Mesin Panas')">Overheat</button>
+            <button type="button" class="chip-btn chip-danger" onclick="selectStopChip('Pengecekan Motor')">Pengecekan Motor</button>
+            <button type="button" class="chip-btn chip-danger" onclick="selectStopChip('Perawatan Rutin')">Perawatan Rutin</button>
+            <button type="button" class="chip-btn chip-danger" onclick="selectStopChip('Istirahat Operator')">Istirahat</button>
+          </div>
+        </div>
+
+        <div class="input-field">
+          <label for="stopReasonInput">Penjelasan / Alasan Terhenti</label>
+          <textarea id="stopReasonInput" rows="3" placeholder="Contoh: Terjadi kendala pada mesin Silo/Dryer/Giling, sedang diperbaiki..." style="background: var(--bg-glass-input); border: 1px solid var(--border-glass); border-radius: 8px; padding: 8px 12px; color: inherit; font-family: var(--font-base); font-size: 13px; outline: none;"></textarea>
+        </div>
+
+        <div class="form-buttons">
+          <button type="button" class="btn btn-outline" id="btnCancelStop">Batal</button>
+          <button type="submit" class="btn btn-del" style="background: #ef4444; color: #ffffff; border: none;">Konfirmasi Terhenti</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal Input Telah Selesai (Selesai Gudang) -->
+  <div class="modal-backdrop" id="completeModal">
+    <div class="modal-dialog modal-small">
+      <div class="modal-head">
+        <h2 class="modal-h2">Input Waktu Telah Selesai</h2>
+        <button class="btn-close" id="btnCloseCompleteModal">&times;</button>
+      </div>
+
+      <form id="completeForm" class="modal-content">
+        <input type="hidden" id="completeItemId">
+
+        <div style="background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.3); border-radius: 8px; padding: 10px 14px; font-size: 13px; color: #6ee7b7;">
+          Menandai selesai barang: <strong id="completeItemInfo" style="color: #ffffff;">X1 - Barang Masuk 1</strong>
+        </div>
+
+        <div class="input-field">
+          <label for="inputCompleteTime">Waktu Telah Selesai (Tanggal & Jam)</label>
+          <input type="datetime-local" id="inputCompleteTime" required>
+        </div>
+
+        <div class="input-field">
+          <label>Tujuan Penempatan Selesai</label>
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 4px;">
+            <label style="display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-radius: 8px; border: 1px solid var(--border-glass); background: var(--bg-glass-input); cursor: pointer; font-size: 13px; font-weight: 600;">
+              <input type="radio" name="completeLocationRadio" value="Gudang" checked style="accent-color: #10b981; width: 16px; height: 16px; cursor: pointer;">
+              <span>Taruh di Gudang</span>
+            </label>
+            <label style="display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-radius: 8px; border: 1px solid var(--border-glass); background: var(--bg-glass-input); cursor: pointer; font-size: 13px; font-weight: 600;">
+              <input type="radio" name="completeLocationRadio" value="Mobil" style="accent-color: #38bdf8; width: 16px; height: 16px; cursor: pointer;">
+              <span>Langsung di Mobil</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="input-row">
+          <div class="input-field">
+            <label for="inputCompleteNote">Keterangan Mutu / Plat Mobil</label>
+            <input type="text" id="inputCompleteNote" placeholder="Contoh: Beras Premium Super / Truk B 1234 CD">
+          </div>
+          <div class="input-field">
+            <label for="inputCompleteTonase">Tonase Akhir (Ton)</label>
+            <input type="number" step="0.1" id="inputCompleteTonase" placeholder="14.2">
+          </div>
+        </div>
+
+        <div class="form-buttons">
+          <button type="button" class="btn btn-outline" id="btnCancelComplete">Batal</button>
+          <button type="submit" class="btn btn-add" style="background: #059669; border: none;">Simpan Telah Selesai</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal Ubah Waktu Selesai per Tahap -->
+  <div class="modal-backdrop" id="editStepTimeModal">
+    <div class="modal-dialog modal-small">
+      <div class="modal-head">
+        <h2 class="modal-h2">Ubah Waktu Selesai Tahap</h2>
+        <button class="btn-close" id="btnCloseEditStepTimeModal">&times;</button>
+      </div>
+
+      <form id="editStepTimeForm" class="modal-content">
+        <input type="hidden" id="editStepItemId">
+        <input type="hidden" id="editStepId">
+
+        <div style="font-size: 13.5px; font-weight: 700; color: #ffffff;" id="editStepTitle">Tahap A: Silo Basah</div>
+
+        <div class="input-field">
+          <label for="inputStepStartTime">Waktu Mulai</label>
+          <input type="datetime-local" id="inputStepStartTime">
+        </div>
+
+        <div class="input-field">
+          <label for="inputStepEndTime">Waktu Telah Selesai</label>
+          <input type="datetime-local" id="inputStepEndTime" required>
+        </div>
+
+        <div class="form-buttons">
+          <button type="button" class="btn btn-outline" id="btnCancelEditStepTime">Batal</button>
+          <button type="submit" class="btn btn-add">Simpan Perubahan Waktu</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal Input Cetak Rekapitulasi Laporan -->
+  <div class="modal-backdrop" id="rekapModal">
+    <div class="modal-dialog">
+      <div class="modal-head">
+        <h2 class="modal-h2">Input Cetak Rekapitulasi Laporan</h2>
+        <button class="btn-close" id="btnCloseRekapModal">&times;</button>
+      </div>
+
+      <form id="rekapForm" class="modal-content">
+        <div class="input-field">
+          <label for="rekapJudul">Judul Rekapitulasi</label>
+          <input type="text" id="rekapJudul" value="Laporan Monitoring Alur Proses Mesin Pabrik" required>
+        </div>
+
+        <div class="input-row">
+          <div class="input-field">
+            <label for="rekapTanggal">Tanggal Laporan</label>
+            <input type="date" id="rekapTanggal" required>
+          </div>
+          <div class="input-field">
+            <label for="rekapPetugas">Nama Petugas / Operator</label>
+            <input type="text" id="rekapPetugas" placeholder="Contoh: Budi Santoso / Shift 1" required>
+          </div>
+        </div>
+
+        <div class="input-row">
+          <div class="input-field">
+            <label for="rekapShift">Pilihan Shift Kerja</label>
+            <select id="rekapShift">
+              <option value="Semua Shift (Harian Penuh)">Semua Shift (Harian Penuh)</option>
+              <option value="Shift 1 (08.00 - 17.00)">Shift 1 (08.00 - 17.00)</option>
+              <option value="Shift 2 (17.00 - 02.00)">Shift 2 (17.00 - 02.00)</option>
+            </select>
+          </div>
+          <div class="input-field">
+            <label for="rekapFilter">Pilihan Data yang Dicetak</label>
+            <select id="rekapFilter">
+              <option value="all">Semua Barang</option>
+              <option value="active">Hanya Yang Sedang Aktif</option>
+              <option value="completed">Hanya Yang Telah Selesai</option>
+              <option value="stopped">Hanya Yang Terhenti (Trouble)</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="input-field">
+          <label for="rekapCatatan">Catatan / Evaluasi Operasional Mesin</label>
+          <textarea id="rekapCatatan" rows="3" placeholder="Tuliskan catatan kondisi operasional mesin, kendala yang terjadi, atau evaluasi harian..." style="background: var(--bg-glass-input); border: 1px solid var(--border-glass); border-radius: 8px; padding: 8px 12px; color: inherit; font-family: var(--font-base); font-size: 13px; outline: none;"></textarea>
+        </div>
+
+        <div class="form-buttons">
+          <button type="button" class="btn btn-outline" id="btnCancelRekap">Batal</button>
+          <button type="submit" class="btn btn-add" style="background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);">Cetak Rekap Sekarang</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal Interaksi Mesin (Klik Mesin pada Denah Pabrik) -->
+  <div class="modal-backdrop" id="machineDetailModal">
+    <div class="modal-dialog modal-small">
+      <div class="modal-head">
+        <h2 class="modal-h2" id="machineModalTitle">Detail Mesin</h2>
+        <button class="btn-close" id="btnCloseMachineModal">&times;</button>
+      </div>
+      <div class="modal-content" id="machineModalContent" style="padding: 18px 20px;">
+        <!-- Rendered dynamically by app.js -->
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal Pusat Kelola & Input Perbaikan Mesin (Denah Interaktif 21 Mesin) -->
+  <div class="modal-backdrop" id="maintenanceManagerModal">
+    <div class="modal-dialog modal-maint-manager">
+      <div class="modal-head">
+        <div class="modal-head-title-group">
+          <h2 class="modal-h2"><span style="color:#ef4444;">⚠️</span> Pusat Input &amp; Kelola Perbaikan Mesin</h2>
+          <div class="modal-head-sub" style="font-size: 11.5px; color: var(--text-lavender); margin-top: 3px;">
+            Klik salah satu kotak mesin pada denah di bawah untuk menandai sedang perbaikan atau menyelesaikan perbaikan
+          </div>
+        </div>
+        <button class="btn-close" id="btnCloseMaintManagerModal" onclick="closeMaintenanceManagerModal()">&times;</button>
+      </div>
+
+      <div class="maint-manager-body">
+        <!-- Summary Bar Utilisasi / Perbaikan -->
+        <div class="maint-manager-summary-bar" id="maintManagerSummaryBar"></div>
+
+        <!-- Header Denah -->
+        <div class="maint-denah-header">
+          <div style="font-size: 12px; font-weight: 800; color: #ffffff; display: flex; align-items: center; gap: 6px;">
+            <span>DENAH INTERAKTIF 21 MESIN PABRIK</span>
+          </div>
+          <div style="font-size: 11px; color: var(--text-muted);">
+            Status: <span style="color:#ef4444; font-weight:700;">🔴 Perbaikan</span> • <span style="color:#10b981; font-weight:700;">🟢 Sedang Aktif</span> • <span style="color:#94a3b8; font-weight:700;">Standby</span>
+          </div>
+        </div>
+
+        <!-- Kontainer Denah 21 Mesin (Zones A, B, C, D) -->
+        <div class="maint-interactive-denah" id="maintInteractiveDenah">
+          <!-- Rendered dynamically by app.js -->
+        </div>
+
+        <!-- Panel Form Input & Action untuk Mesin Terpilih -->
+        <div class="maint-selected-panel" id="maintSelectedPanel">
+          <!-- Rendered dynamically by app.js -->
+        </div>
+      </div>
+
+      <div class="modal-actions" style="justify-content: flex-end; padding: 12px 20px;">
+        <button type="button" class="btn btn-outline" onclick="closeMaintenanceManagerModal()">Tutup</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal Input Perbaikan Mesin (Maintenance / Lapor Kendala Unit) -->
+  <div class="modal-backdrop" id="machineMaintenanceModal">
+    <div class="modal-dialog modal-small">
+      <div class="modal-head">
+        <h2 class="modal-h2">Input Perbaikan Mesin</h2>
+        <button class="btn-close" id="btnCloseMaintenanceModal">&times;</button>
+      </div>
+
+      <form id="maintenanceForm" class="modal-content">
+        <input type="hidden" id="maintenanceStepId">
+        <input type="hidden" id="maintenanceMachineName">
+
+        <div style="background: rgba(239, 68, 68, 0.12); border: 1.5px solid rgba(239, 68, 68, 0.35); border-radius: 10px; padding: 12px; font-size: 13px;">
+          <div>Unit Mesin: <strong id="maintenanceMachineDisplay" style="color: #ffffff;">Silo Basah 1</strong></div>
+          <div style="font-size: 11.5px; color: var(--text-lavender); margin-top: 3px;">
+            Mesin akan ditandai dalam status <strong>PERBAIKAN</strong> pada denah pabrik dan tidak dapat menerima barang baru sampai perbaikan selesai.
+          </div>
+        </div>
+
+        <div class="input-field">
+          <label>Pilih Jenis Kendala / Tindakan Cepat</label>
+          <div class="quick-chips-grid" id="maintenanceChips" style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px;">
+            <button type="button" class="chip-btn chip-danger" onclick="selectMaintenanceChip(this)">Pembersihan Rutin</button>
+            <button type="button" class="chip-btn chip-danger" onclick="selectMaintenanceChip(this)">Ganti Bearing/Part</button>
+            <button type="button" class="chip-btn chip-danger" onclick="selectMaintenanceChip(this)">Kerusakan Motor</button>
+            <button type="button" class="chip-btn chip-danger" onclick="selectMaintenanceChip(this)">Conveyor Macet</button>
+            <button type="button" class="chip-btn chip-danger" onclick="selectMaintenanceChip(this)">Kebocoran Fisik</button>
+            <button type="button" class="chip-btn chip-danger" onclick="selectMaintenanceChip(this)">Pengecekan Sensor</button>
+          </div>
+        </div>
+
+        <div class="input-field">
+          <label for="maintenanceReasonInput">Penjelasan / Tindakan Perbaikan</label>
+          <textarea id="maintenanceReasonInput" rows="3" placeholder="Tuliskan kendala atau tindakan perbaikan mesin..." required style="background: var(--bg-glass-input); border: 1px solid var(--border-glass); border-radius: 8px; padding: 8px 12px; color: inherit; font-family: var(--font-base); font-size: 13px; outline: none; width: 100%; box-sizing: border-box;"></textarea>
+        </div>
+
+        <div class="form-buttons">
+          <button type="button" class="btn btn-outline" id="btnCancelMaintenance">Batal</button>
+          <button type="submit" class="btn btn-del" style="background: #ef4444; color: #ffffff; border: none;">Simpan Status Perbaikan</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal Keamanan Konfirmasi Reset (Proteksi Sandi Supervisor) -->
+  <div class="modal-backdrop" id="resetSecurityModal">
+    <div class="modal-dialog modal-small">
+      <div class="modal-head">
+        <div class="modal-title-group">
+          <h2 class="modal-h2">Otorisasi Reset Sistem</h2>
+        </div>
+        <button type="button" class="btn-close" id="btnCloseResetSecurityModal" aria-label="Tutup">&times;</button>
+      </div>
+
+      <form id="resetSecurityForm" class="modal-content">
+        <div style="background: rgba(239, 68, 68, 0.12); border: 1.5px solid rgba(239, 68, 68, 0.35); border-radius: 12px; padding: 12px 14px; font-size: 13px; color: #fca5a5; line-height: 1.5;">
+          <div style="font-weight: 800; color: #f87171; display: flex; align-items: center; gap: 6px; margin-bottom: 4px;">
+            <span>⚠️</span> PERINGATAN TINDAKAN KRUSIAL
+          </div>
+          <div>
+            Tindakan ini akan <strong>menghapus seluruh antrian dan data alur mesin</strong> yang sedang berjalan dan mengembalikan ke 1 batch awal (PMD0001).
+          </div>
+          <div style="font-size: 11.5px; color: var(--text-lavender); margin-top: 6px;">
+            *Sistem akan otomatis mengamankan cadangan darurat (Emergency Backup) sebelum reset dieksekusi.
+          </div>
+        </div>
+
+        <div class="input-field" style="margin-top: 14px;">
+          <label for="inputResetPassword" style="font-weight: 700; color: #f1f5f9;">Masukkan Sandi Supervisor / Admin:</label>
+          <div style="position: relative; display: flex; align-items: center;">
+            <input type="password" id="inputResetPassword" required placeholder="Ketik kata sandi..." autocomplete="current-password" style="width: 100%; padding-right: 42px; font-family: var(--font-mono); font-size: 14px; letter-spacing: 1px;">
+            <button type="button" id="btnToggleResetPassword" title="Tampilkan / Sembunyikan Sandi" style="position: absolute; right: 10px; background: transparent; border: none; cursor: pointer; font-size: 16px; opacity: 0.7; padding: 4px;">
+              Lihat
+            </button>
+          </div>
+          <div id="resetPasswordError" style="display: none; color: #f87171; font-size: 12px; font-weight: 600; margin-top: 6px;"></div>
+        </div>
+
+        <!-- Cadangan Darurat Terdeteksi -->
+        <div id="resetBackupDetectedBox" style="display: none; background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.3); border-radius: 8px; padding: 8px 12px; font-size: 12px; color: #6ee7b7; margin-top: 4px;">
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <span>Tersedia cadangan darurat sebelumnya.</span>
+            <button type="button" id="btnRestoreEmergencyBackup" class="btn btn-sm" style="background: rgba(16, 185, 129, 0.25); border: 1px solid #10b981; color: #a7f3d0; font-size: 11px; padding: 3px 8px; cursor: pointer;">
+              Pulihkan Data
+            </button>
+          </div>
+        </div>
+
+        <div class="form-buttons" style="margin-top: 18px;">
+          <button type="button" class="btn btn-outline" id="btnCancelResetSecurity">Batal</button>
+          <button type="submit" class="btn btn-del" style="background: #ef4444; color: #ffffff; border: none; font-weight: 700; box-shadow: 0 4px 14px rgba(239, 68, 68, 0.35);">
+            Verifikasi &amp; Reset Data
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Area Cetak Laporan (Hanya muncul saat Print) -->
+  <div id="printReportArea" class="print-only"></div>
+
+  <!-- Notification Toast -->
+  <div id="toast" class="toast-popup"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

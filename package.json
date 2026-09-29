@@ -1,0 +1,13 @@
+{
+  "name": "monitoring-mesin-alur-proses",
+  "version": "1.0.0",
+  "description": "Aplikasi Monitoring Alur Proses Mesin (Silo Basah, Dryer, Silo Kering, Giling, Mix, Packing)",
+  "main": "index.html",
+  "scripts": {
+    "start": "npx -y serve . -l 8080",
+    "dev": "npx -y serve . -l 8080"
+  },
+  "keywords": ["monitoring", "mesin", "alur-proses", "scada", "pabrik"],
+  "author": "Antigravity",
+  "license": "MIT"
+}
