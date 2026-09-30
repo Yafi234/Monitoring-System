@@ -466,11 +466,11 @@ body {
   font-family: var(--font-base);
   background-color: var(--bg-page);
   background-image: 
-    radial-gradient(circle at 12% 16%, rgba(99, 102, 241, 0.28) 0%, transparent 45%),
-    radial-gradient(circle at 88% 14%, rgba(139, 92, 246, 0.25) 0%, transparent 42%),
-    radial-gradient(circle at 50% 50%, rgba(37, 99, 235, 0.16) 0%, transparent 55%),
-    radial-gradient(circle at 15% 85%, rgba(168, 85, 247, 0.2) 0%, transparent 45%),
-    radial-gradient(circle at 85% 85%, rgba(14, 165, 233, 0.16) 0%, transparent 45%);
+    radial-gradient(circle at 10% 12%, rgba(99, 102, 241, 0.38) 0%, transparent 48%),
+    radial-gradient(circle at 90% 10%, rgba(139, 92, 246, 0.35) 0%, transparent 46%),
+    radial-gradient(circle at 50% 50%, rgba(37, 99, 235, 0.22) 0%, transparent 58%),
+    radial-gradient(circle at 12% 88%, rgba(168, 85, 247, 0.28) 0%, transparent 48%),
+    radial-gradient(circle at 88% 90%, rgba(14, 165, 233, 0.24) 0%, transparent 48%);
   background-attachment: fixed;
   color: var(--text-primary);
   min-height: 100vh;
@@ -2509,16 +2509,16 @@ body.light-theme .view-btn.active {
   color: #ffffff;
 }
 
-/* Floor Plan Card */
+/* Floor Plan Card - Transparent container so page background is fully visible */
 .floor-plan-card {
-  background: var(--bg-glass-card);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border: 1px solid var(--border-glass);
-  border-radius: 12px;
-  padding: 8px 10px;
+  background: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border: none;
+  border-radius: 0;
+  padding: 0;
   margin-bottom: 0;
-  box-shadow: var(--shadow-glass);
+  box-shadow: none;
   transition: all 0.3s ease;
   width: 100%;
   box-sizing: border-box;
@@ -5488,5 +5488,70 @@ body.light-theme .m-chip-owner {
   background: rgba(245, 158, 11, 0.08) !important;
   cursor: not-allowed;
 }
+
+/* Recycle / Re-process Indicators */
+.m-chip-recycle-badge {
+  font-size: 8.5px;
+  font-weight: 800;
+  color: #f59e0b;
+  background: rgba(245, 158, 11, 0.22);
+  border: 1px solid rgba(245, 158, 11, 0.55);
+  border-radius: 3px;
+  padding: 0.5px 3.5px;
+  flex-shrink: 0;
+  line-height: 1.2;
+}
+
+body.light-theme .m-chip-recycle-badge {
+  color: #d97706;
+  background: rgba(245, 158, 11, 0.18);
+  border-color: rgba(217, 119, 6, 0.45);
+}
+
+.m-unit-batch-chip.is-recycled:not(.is-stopped) {
+  border-color: rgba(245, 158, 11, 0.4);
+}
+
+.badge-item-recycle {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  background: rgba(245, 158, 11, 0.18);
+  border: 1px solid rgba(245, 158, 11, 0.5);
+  color: #f59e0b;
+  font-size: 10px;
+  font-weight: 800;
+  padding: 1.5px 6px;
+  border-radius: 4px;
+  vertical-align: middle;
+}
+
+body.light-theme .badge-item-recycle {
+  color: #d97706;
+  background: rgba(245, 158, 11, 0.15);
+  border-color: rgba(217, 119, 6, 0.45);
+}
+
+.m-unit-batch-chip.is-queued:not(.is-stopped) {
+  border-color: rgba(245, 158, 11, 0.45);
+  background: rgba(245, 158, 11, 0.08);
+}
+
+.m-unit-batch-chip.is-queued:hover {
+  background: rgba(245, 158, 11, 0.15);
+  border-color: rgba(245, 158, 11, 0.65);
+}
+
+body.light-theme .m-unit-batch-chip.is-queued:not(.is-stopped) {
+  background: #fffbeb;
+  border-color: #fcd34d;
+}
+
+body.light-theme .m-unit-batch-chip.is-queued:hover {
+  background: #fef3c7;
+  border-color: #f59e0b;
+}
+
+
 
 

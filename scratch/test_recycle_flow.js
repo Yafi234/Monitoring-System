@@ -78,9 +78,9 @@ function executeStepAdvance(itemId, targetStepId, selectedMachine) {
   const targetIdx = getSubstepIndex(targetStepId);
   const isDirectGilingToPacking = (item.currentStepId === 'C-giling' && targetStepId === 'D-packing');
   const isStartingFromStandby = (currentIdx === -1);
-  const isRecyclingFlow = (item.currentStepId === 'C-silo' && (targetStepId === 'B-dryer' || targetStepId === 'A-silo'));
+  const isRecyclingFlow = (item.currentStepId === 'C-silo' && targetStepId === 'A-silo');
 
-  // Validasi ketat: Alur proses TIDAK BOLEH terlewati! Kecuali bypass giling->packing, start standby, atau alur pengulangan C-silo -> B-dryer/A-silo
+  // Validasi ketat: Alur proses TIDAK BOLEH terlewati! Kecuali bypass giling->packing, start standby, atau alur pengulangan C-silo -> A-silo
   if (!isStartingFromStandby && !isDirectGilingToPacking && !isRecyclingFlow) {
     if (targetIdx > currentIdx + 1) {
       return { success: false, reason: 'Cannot skip forward steps' };
@@ -169,53 +169,42 @@ function executeStepAdvance(itemId, targetStepId, selectedMachine) {
 }
 
 // RUN TESTS
-console.log('=== TEST 1: Silo Kering 3 (2 batches, 25T) returns to Dryer 2 (Pengeringan Ulang) ===');
+console.log('=== TEST 1: Silo Kering 3 (2 batches, 25T) returns to Silo Basah 1 (Pengulangan Alur Pabrik) ===');
 items = [
   { id: '1', code: 'PMD-01', name: 'Pak Tono', supir: 'Tono', tonase: 10, currentStepId: 'C-silo', status: 'active', assignedMachines: { 'C-silo': 'Silo Kering 3' } },
   { id: '2', code: 'PMD-02', name: 'Pak Joko', supir: 'Joko', tonase: 15, currentStepId: 'C-silo', status: 'active', assignedMachines: { 'C-silo': 'Silo Kering 3' } }
 ];
 
 console.log('SK 3 initially:', getMachineUnitOccupancy('C-silo', 'Silo Kering 3'));
-console.log('Dryer 2 initially:', getMachineUnitOccupancy('B-dryer', 'Dryer 2'));
+console.log('Silo Basah 1 initially:', getMachineUnitOccupancy('A-silo', 'Silo Basah 1'));
 
-const resRecycleDryer = executeStepAdvance('1', 'B-dryer', 'Dryer 2');
-console.log('Recycle to Dryer 2 result:', resRecycleDryer);
-if (!resRecycleDryer.success || resRecycleDryer.movedCount !== 2) throw new Error('Recycle to Dryer failed');
+const resRecycleSB = executeStepAdvance('1', 'A-silo', 'Silo Basah 1');
+console.log('Recycle to Silo Basah 1 result:', resRecycleSB);
+if (!resRecycleSB.success || resRecycleSB.movedCount !== 2) throw new Error('Recycle to Silo Basah failed');
 
 const sk3AfterRecycle = getMachineUnitOccupancy('C-silo', 'Silo Kering 3');
-const d2AfterRecycle = getMachineUnitOccupancy('B-dryer', 'Dryer 2');
+const sb1AfterRecycle = getMachineUnitOccupancy('A-silo', 'Silo Basah 1');
 console.log('SK 3 count after recycle (should be 0):', sk3AfterRecycle.count);
-console.log('Dryer 2 count after recycle (should be 2, 25T):', d2AfterRecycle.count, d2AfterRecycle.totalTonase);
+console.log('Silo Basah 1 count after recycle (should be 2, 25T):', sb1AfterRecycle.count, sb1AfterRecycle.totalTonase);
 
-if (sk3AfterRecycle.count !== 0 || d2AfterRecycle.count !== 2 || d2AfterRecycle.totalTonase !== 25) {
-  throw new Error('Occupancy mismatch after recycle to Dryer');
+if (sk3AfterRecycle.count !== 0 || sb1AfterRecycle.count !== 2 || sb1AfterRecycle.totalTonase !== 25) {
+  throw new Error('Occupancy mismatch after recycle to Silo Basah');
 }
 
 const item1 = items.find(i => i.id === '1');
 console.log('Item 1 recycleCount:', item1.recycleCount, 'log:', item1.recycleLog);
 if (item1.recycleCount !== 1) throw new Error('Recycle count should be 1');
 
-console.log('TEST 1 PASSED: Silo Kering 3 to Dryer 2 succeeded!\n');
+console.log('TEST 1 PASSED: Silo Kering 3 to Silo Basah 1 succeeded!\n');
 
-console.log('=== TEST 2: Re-advance from Dryer 2 to Silo Kering 4 after drying ===');
-const resReAdvance = executeStepAdvance('1', 'C-silo', 'Silo Kering 4');
-console.log('Re-advance result:', resReAdvance);
-if (!resReAdvance.success || resReAdvance.movedCount !== 2) throw new Error('Re-advance failed');
+console.log('=== TEST 2: Re-advance from Silo Basah 1 to Dryer 2 after recycle ===');
+const resReAdvanceDryer = executeStepAdvance('1', 'B-dryer', 'Dryer 2');
+console.log('Re-advance result:', resReAdvanceDryer);
+if (!resReAdvanceDryer.success || resReAdvanceDryer.movedCount !== 2) throw new Error('Re-advance to Dryer failed');
 
-const sk4After = getMachineUnitOccupancy('C-silo', 'Silo Kering 4');
-console.log('SK 4 occupancy:', sk4After.count, sk4After.totalTonase);
-if (sk4After.count !== 2 || sk4After.totalTonase !== 25) throw new Error('SK 4 occupancy mismatch');
+const d2After = getMachineUnitOccupancy('B-dryer', 'Dryer 2');
+console.log('Dryer 2 occupancy:', d2After.count, d2After.totalTonase);
+if (d2After.count !== 2 || d2After.totalTonase !== 25) throw new Error('Dryer 2 occupancy mismatch');
 
-console.log('TEST 2 PASSED: Re-advancing to Silo Kering after drying succeeded!\n');
-
-console.log('=== TEST 3: Silo Kering 4 (25T) returns to Silo Basah 1 (Kembali ke Silo Basah) ===');
-const resRecycleSB = executeStepAdvance('2', 'A-silo', 'Silo Basah 1');
-console.log('Recycle to SB 1 result:', resRecycleSB);
-if (!resRecycleSB.success || resRecycleSB.movedCount !== 2) throw new Error('Recycle to SB failed');
-
-const sb1After = getMachineUnitOccupancy('A-silo', 'Silo Basah 1');
-console.log('SB 1 occupancy:', sb1After.count, sb1After.totalTonase);
-if (sb1After.count !== 2 || sb1After.totalTonase !== 25) throw new Error('SB 1 occupancy mismatch');
-
-console.log('TEST 3 PASSED: Silo Kering to Silo Basah succeeded!\n');
+console.log('TEST 2 PASSED: Re-advancing from Silo Basah to Dryer succeeded!\n');
 console.log('ALL RECYCLING TESTS PASSED 100%!');

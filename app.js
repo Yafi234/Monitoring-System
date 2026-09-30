@@ -99,13 +99,32 @@ function getMachineUnitOccupancy(stepId, machineUnitName, excludeItemId = null) 
     return id === excludeItemId;
   };
 
-  const matchingItems = items.filter(i => 
-    !isExcluded(i.id) &&
-    i.currentStepId === stepId &&
-    (i.status === 'active' || i.status === 'stopped') &&
-    i.assignedMachines &&
-    i.assignedMachines[stepId] === machineUnitName
-  );
+  const normMachine = (name) => {
+    if (!name) return '';
+    return name.replace(/^SK\s*/i, 'Silo Kering ').trim();
+  };
+  const targetNorm = normMachine(machineUnitName);
+
+  const matchingItems = items.filter(i => {
+    if (isExcluded(i.id)) return false;
+    if (i.status !== 'active' && i.status !== 'stopped') return false;
+
+    // Normal check: barang berada di tahap ini dan unit mesin cocok
+    if (i.currentStepId === stepId && i.assignedMachines && normMachine(i.assignedMachines[stepId]) === targetNorm) {
+      return true;
+    }
+
+    // Khusus Silo Kering (C-silo): jika barang sedang antri ke mesin giling (isQueuedForGiling),
+    // barang tersebut secara fisik MASIH berada di Silo Kering asalnya dan masih menempati kapasitas!
+    if (stepId === 'C-silo' && i.currentStepId === 'C-giling' && i.isQueuedForGiling) {
+      const originSilo = i.assignedMachines?.['C-silo'] || i.stepHistory?.['C-silo']?.machine;
+      if (originSilo && normMachine(originSilo) === targetNorm) {
+        return true;
+      }
+    }
+
+    return false;
+  });
 
   const totalTonase = matchingItems.reduce((acc, it) => acc + (parseFloat(it.tonase) || 0), 0);
   const roundedTotal = Math.round(totalTonase * 10) / 10;
@@ -1005,6 +1024,20 @@ function formatDateTimeShort(iso) {
   return `${day} ${month}, ${h}:${m}`;
 }
 
+function formatDateTime(iso) {
+  if (!iso) return '-';
+  const d = (iso instanceof Date) ? iso : new Date(iso);
+  if (isNaN(d.getTime())) return '-';
+  const day = d.getDate();
+  const month = ID_MONTHS[d.getMonth()] || ID_MONTHS_SHORT[d.getMonth()] || '';
+  const year = d.getFullYear();
+  const h = String(d.getHours()).padStart(2, '0');
+  const m = String(d.getMinutes()).padStart(2, '0');
+  return `${day} ${month} ${year}, ${h}:${m} WIB`;
+}
+window.formatDateTime = formatDateTime;
+window.formatDateTimeShort = formatDateTimeShort;
+
 function calcDuration(startIso, endIso) {
   if (!startIso) return '-';
   const start = new Date(startIso).getTime();
@@ -1154,7 +1187,7 @@ function getItemJourneyTrail(item) {
     item.recycleLog.forEach((r, idx) => {
       trail.push({
         stepId: r.toStep,
-        stepName: r.toStep === 'B-dryer' ? 'Dryer (Pengeringan Ulang)' : 'Silo Basah',
+        stepName: r.toStep === 'B-dryer' ? 'Dryer (Pengeringan Ulang)' : 'Silo Basah (Pengulangan)',
         machine: r.toMachine || (r.toStep === 'B-dryer' ? 'Dryer 1' : 'Silo Basah 1'),
         startedAt: r.timestamp,
         completedAt: null,
@@ -1177,9 +1210,9 @@ function getItemJourneyTrail(item) {
   } else if (item.recycleCount > 0) {
     for (let c = 1; c <= item.recycleCount; c++) {
       trail.push({
-        stepId: 'B-dryer',
-        stepName: 'Dryer (Pengeringan Ulang)',
-        machine: assigned['B-dryer'] || 'Dryer 1',
+        stepId: 'A-silo',
+        stepName: 'Silo Basah (Pengulangan)',
+        machine: assigned['A-silo'] || 'Silo Basah 1',
         startedAt: null,
         completedAt: null,
         isRecycle: true,
@@ -1262,7 +1295,7 @@ function executeStepAdvance(itemId, targetStepId, selectedMachine, gilingType, i
   const targetIdx = getSubstepIndex(targetStepId);
   const isDirectGilingToPacking = (item.currentStepId === 'C-giling' && targetStepId === 'D-packing');
   const isStartingFromStandby = (currentIdx === -1);
-  const isRecyclingFlow = (item.currentStepId === 'C-silo' && (targetStepId === 'B-dryer' || targetStepId === 'A-silo'));
+  const isRecyclingFlow = (item.currentStepId === 'C-silo' && targetStepId === 'A-silo');
 
   // Validasi ketat: Alur proses TIDAK BOLEH terlewati! (Kecuali dari Giling langsung ke Packing, mulai dari Standby, atau Alur Pengulangan Gabah Masih Basah)
   if (!isStartingFromStandby && !isDirectGilingToPacking && !isRecyclingFlow) {
@@ -1520,7 +1553,7 @@ function executeStepAdvance(itemId, targetStepId, selectedMachine, gilingType, i
 
   if (isRecyclingFlow) {
     const unitLabel = coItems.length > 1 ? `Muatan ${coItems.length} padi dari ${oldMachine}` : `${item.code} (${oldMachine})`;
-    showToast(`⚠️ Alur Pengulangan: ${unitLabel} (${roundedGroupTonase} Ton) dialirkan kembali ke ${machineName} untuk pengeringan ulang (gabah masih basah)!`);
+    showToast(`♻️ Alur Pengulangan: ${unitLabel} (${roundedGroupTonase} Ton) dialirkan kembali ke ${machineName} untuk pengeringan ulang (gabah masih basah)!`);
   } else if (coItems.length > 1) {
     showToast(`Muatan ${coItems.length} padi dari ${oldMachine} (Total ${roundedGroupTonase} Ton) berhasil dialirkan bersamaan ke ${machineName}!`);
   } else if (targetStepId === 'C-giling' && item.isQueuedForGiling) {
@@ -1677,7 +1710,16 @@ function openCompleteModal(itemId) {
   if (!item) return;
 
   document.getElementById('completeItemId').value = item.id;
-  document.getElementById('completeItemInfo').textContent = `${item.code} - ${item.name}`;
+  const curPos = (item.assignedMachines && item.assignedMachines[item.currentStepId]) || item.currentStepId || 'Standby';
+  const posLabel = item.status === 'completed' ? 'Sudah Selesai' : `Posisi: ${curPos}`;
+  document.getElementById('completeItemInfo').textContent = `${item.code} - ${item.name} (${posLabel})`;
+
+  const titleEl = document.getElementById('completeModalTitle');
+  if (titleEl) {
+    titleEl.textContent = item.status === 'completed' 
+      ? `Ubah Data Mutasi (${item.code})` 
+      : `Formulir Pembikinan Mutasi (${item.code})`;
+  }
   
   // Default datetime: existing completedAt atau saat ini
   const initialTime = item.completedAt || new Date().toISOString();
@@ -1781,13 +1823,16 @@ function handleCompleteSubmit(e) {
 
   saveData();
   renderTable();
+  if (typeof currentLogbookView !== 'undefined' && currentLogbookView === 'mutasi') {
+    renderMutasiRiwayat();
+  }
   closeCompleteModal();
 
   if (activeModalItemId === itemId) {
     openDetailModal(itemId);
   }
-  const locLabel = lokasiSelesai === 'Mobil' ? 'Langsung di Mobil' : 'Gudang';
-  showToast(`${item.code} telah selesai (${locLabel})! Dicatat selesai: ${formatDateTimeShort(finishIso)}.`);
+  const locLabel = lokasiSelesai === 'Mobil' ? 'Langsung Muat Mobil / Truk' : 'Masuk Gudang';
+  showToast(`✅ Mutasi ${item.code} berhasil disimpan (${locLabel})! Dicatat: ${formatDateTimeShort(finishIso)}.`);
 }
 
 /**
@@ -2151,8 +2196,8 @@ function handleTrackClick(itemId, targetStepId) {
     return;
   }
 
-  // Alur Pengulangan Mesin: dari Silo Kering ke Dryer atau Silo Basah (karena gabah masih basah)
-  if (currentStepId === 'C-silo' && (targetStepId === 'B-dryer' || targetStepId === 'A-silo')) {
+  // Alur Pengulangan Mesin: dari Silo Kering ke Silo Basah (karena gabah masih basah)
+  if (currentStepId === 'C-silo' && targetStepId === 'A-silo') {
     openStepConfirmModal(itemId, targetStepId, false);
     return;
   }
@@ -2288,8 +2333,8 @@ function openStepConfirmModal(itemId, targetStepId, isSkipping) {
     isSkipping = false;
   }
 
-  // Alur Pengulangan Mesin: Dari Silo Kering (C-silo) ke Dryer (B-dryer) atau Silo Basah (A-silo) karena masih basah
-  const isRecyclingFlow = (item.currentStepId === 'C-silo' && (targetStepId === 'B-dryer' || targetStepId === 'A-silo'));
+  // Alur Pengulangan Mesin: Dari Silo Kering (C-silo) ke Silo Basah (A-silo) karena masih basah
+  const isRecyclingFlow = (item.currentStepId === 'C-silo' && targetStepId === 'A-silo');
   if (isRecyclingFlow) {
     isSkipping = false;
   }
@@ -2435,7 +2480,7 @@ function openStepConfirmModal(itemId, targetStepId, isSkipping) {
           </div>
           Unit asal [<strong>${escapeHtml(sourceMachineName)}</strong>] berisi <strong>${coItems.length} muatan padi</strong>:
           <div style="margin: 6px 0; padding: 6px 10px; background: rgba(0,0,0,0.28); border-radius: 8px; font-size: 11px;">
-            ${coItems.map(c => `<strong style="color:#60a5fa;">${escapeHtml(c.code)}</strong> (${escapeHtml(c.supir || c.name || '-')}: <strong>${c.tonase || 0}T</strong>)`).join(' + ')} = <strong style="color:#34d399;">${roundedMovingTonase} Ton</strong>
+            ${coItems.map(c => `<strong style="color:#60a5fa;">${escapeHtml(c.code)}</strong>${c.recycleCount > 0 ? ` <span class="badge-item-recycle" style="font-size:8.5px; padding:0.5px 3.5px;">♻️${c.recycleCount}x</span>` : ''} (${escapeHtml(c.supir || c.name || '-')}: <strong>${c.tonase || 0}T</strong>)`).join(' + ')} = <strong style="color:#34d399;">${roundedMovingTonase} Ton</strong>
           </div>
           Sesuai aturan pabrik, seluruh muatan dalam satu unit <em>tidak dapat dipisah</em> dan wajib dialirkan bersamaan ke unit tujuan yang sama.
         </div>
@@ -2467,7 +2512,7 @@ function openStepConfirmModal(itemId, targetStepId, isSkipping) {
           </div>
           Unit asal [<strong>${escapeHtml(sourceMachineName)}</strong>] berisi <strong>${coItems.length} muatan padi</strong>:
           <div style="margin: 6px 0; padding: 6px 10px; background: rgba(0,0,0,0.28); border-radius: 8px; font-size: 11px;">
-            ${coItems.map(c => `<strong style="color:#60a5fa;">${escapeHtml(c.code)}</strong> (${escapeHtml(c.supir || c.name || '-')}: <strong>${c.tonase || 0}T</strong>)`).join(' + ')} = <strong style="color:#34d399;">${roundedMovingTonase} Ton</strong>
+            ${coItems.map(c => `<strong style="color:#60a5fa;">${escapeHtml(c.code)}</strong>${c.recycleCount > 0 ? ` <span class="badge-item-recycle" style="font-size:8.5px; padding:0.5px 3.5px;">♻️${c.recycleCount}x</span>` : ''} (${escapeHtml(c.supir || c.name || '-')}: <strong>${c.tonase || 0}T</strong>)`).join(' + ')} = <strong style="color:#34d399;">${roundedMovingTonase} Ton</strong>
           </div>
           Muatan pertama akan langsung diproses (atau antri jika mesin sibuk), dan muatan berikutnya akan langsung berada dalam antrian penggilingan berurutan.
         </div>
@@ -2629,10 +2674,9 @@ function openStepConfirmModal(itemId, targetStepId, isSkipping) {
       container.innerHTML = pathChooserHtml + container.innerHTML;
     }
 
-    // Jika item saat ini sedang di Silo Kering (C-silo), tampilkan pilihan alur: Lanjut ke Giling atau Ulang jika gabah masih basah
+    // Jika item saat ini sedang di Silo Kering (C-silo), tampilkan pilihan alur: Lanjut ke Giling atau Ulang Silo Basah jika gabah masih basah
     if (item.currentStepId === 'C-silo') {
       const isGilingActive = actualTargetStep.id === 'C-giling';
-      const isDryerActive = actualTargetStep.id === 'B-dryer';
       const isSiloBasahActive = actualTargetStep.id === 'A-silo';
 
       const pathChooserHtml = `
@@ -2640,23 +2684,20 @@ function openStepConfirmModal(itemId, targetStepId, isSkipping) {
           <div style="font-size: 11.5px; font-weight: 700; color: var(--text-lavender); margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between;">
             <span>PILIHAN ALUR KELUAR DARI SILO KERING:</span>
             <span style="font-size: 10.5px; color: ${isRecyclingFlow ? '#f59e0b' : 'var(--text-muted)'}; font-weight: 700;">
-              ${isRecyclingFlow ? '⚠️ Alur Pengulangan (Gabah Masih Basah)' : 'Alur Normal: Lanjut ke Giling'}
+              ${isRecyclingFlow ? '♻️ Alur Pengulangan (Gabah Masih Basah)' : 'Alur Normal: Lanjut ke Giling'}
             </span>
           </div>
-          <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px;">
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
             <button type="button" class="giling-path-btn" onclick="switchStepModalTarget('C-giling')" style="padding: 9px 6px; border-radius: 8px; font-size: 11px; font-weight: 700; cursor: pointer; text-align: center; border: 1.5px solid ${isGilingActive ? '#10b981' : 'rgba(255,255,255,0.12)'}; background: ${isGilingActive ? 'rgba(16, 185, 129, 0.22)' : 'rgba(255,255,255,0.03)'}; color: ${isGilingActive ? '#fff' : 'var(--text-muted)'};">
               1. Lanjut ke Giling
             </button>
-            <button type="button" class="giling-path-btn" onclick="switchStepModalTarget('B-dryer')" style="padding: 9px 6px; border-radius: 8px; font-size: 11px; font-weight: 700; cursor: pointer; text-align: center; border: 1.5px solid ${isDryerActive ? '#f59e0b' : 'rgba(255,255,255,0.12)'}; background: ${isDryerActive ? 'rgba(245, 158, 11, 0.25)' : 'rgba(255,255,255,0.03)'}; color: ${isDryerActive ? '#fff' : 'var(--text-muted)'};">
-              2. Ulang ke Dryer (Basah)
-            </button>
             <button type="button" class="giling-path-btn" onclick="switchStepModalTarget('A-silo')" style="padding: 9px 6px; border-radius: 8px; font-size: 11px; font-weight: 700; cursor: pointer; text-align: center; border: 1.5px solid ${isSiloBasahActive ? '#f59e0b' : 'rgba(255,255,255,0.12)'}; background: ${isSiloBasahActive ? 'rgba(245, 158, 11, 0.25)' : 'rgba(255,255,255,0.03)'}; color: ${isSiloBasahActive ? '#fff' : 'var(--text-muted)'};">
-              3. Ulang Silo Basah (Basah)
+              2. Ulang Silo Basah (Basah)
             </button>
           </div>
           ${isRecyclingFlow ? `
             <div style="margin-top: 8px; font-size: 11px; color: #fde68a; line-height: 1.45; background: rgba(0,0,0,0.25); border-radius: 6px; padding: 6px 8px;">
-              ⚠️ <em>Kondisi gabah di Silo Kering masih berkadar air tinggi / belum cukup kering. Gabah dialirkan kembali ke <strong>${escapeHtml(actualTargetStep.lineName)}</strong> untuk pengeringan ulang. Seluruh muatan unit (${roundedMovingTonase}T) akan pindah bersamaan.</em>
+              ♻️ <em>Kondisi gabah di Silo Kering masih berkadar air tinggi / belum cukup kering. Gabah dialirkan kembali ke <strong>${escapeHtml(actualTargetStep.lineName)}</strong> untuk pengeringan ulang dari awal. Seluruh muatan unit (${roundedMovingTonase}T) akan pindah bersamaan.</em>
             </div>
           ` : ''}
         </div>
@@ -2689,6 +2730,17 @@ function openStepConfirmModal(itemId, targetStepId, isSkipping) {
   }
 
   document.getElementById('stepNextName').textContent = `${actualTargetStep.stageName} • ${actualTargetStep.lineName}`;
+  const titleEl = document.getElementById('stepModalTitle');
+  if (titleEl) {
+    if (isRecyclingFlow) {
+      titleEl.innerHTML = `♻️ Pengulangan Siklus Mesin (${escapeHtml(item.code)})`;
+    } else if (item.recycleCount > 0) {
+      titleEl.innerHTML = `Konfirmasi Alur: ${escapeHtml(item.code)} <span class="badge-item-recycle" style="font-size:10px; vertical-align:middle; margin-left:4px;">♻️ Diulang ${item.recycleCount}x</span>`;
+    } else {
+      titleEl.textContent = `Konfirmasi Alur: ${item.code}`;
+    }
+  }
+
   const nextLabelEl = document.getElementById('stepNextLabel');
   if (nextLabelEl) {
     if (isRecyclingFlow) {
@@ -2924,7 +2976,7 @@ window.setViewMode = setViewMode;
 /**
  * Kontrol Tampilan Denah: Fit-to-Screen (Pas Layar) vs Scroll Mode (Mode Geser)
  */
-function setFloorFitMode(mode) {
+function setFloorFitMode(mode, showNotification = false) {
   const card = document.getElementById('factoryFloorPlan');
   const btnFit = document.getElementById('btnFitScreen');
   const btnScroll = document.getElementById('btnScrollScreen');
@@ -2936,14 +2988,14 @@ function setFloorFitMode(mode) {
     if (btnFit) btnFit.classList.remove('active');
     if (btnScroll) btnScroll.classList.add('active');
     try { localStorage.setItem('monitoring_mesin_floor_fit_mode', 'scroll'); } catch(e) {}
-    showToast('↔️ Mode Geser aktif: Denah diperlebar dengan geser horizontal');
+    if (showNotification) showToast('↔️ Mode Geser aktif: Denah diperlebar dengan geser horizontal');
   } else {
     card.classList.remove('scroll-mode');
     card.classList.add('fit-mode');
     if (btnFit) btnFit.classList.add('active');
     if (btnScroll) btnScroll.classList.remove('active');
     try { localStorage.setItem('monitoring_mesin_floor_fit_mode', 'fit'); } catch(e) {}
-    showToast('Pas Layar aktif: Seluruh denah muat 1 layar penuh tanpa digeser');
+    if (showNotification) showToast('Pas Layar aktif: Seluruh denah muat 1 layar penuh tanpa digeser');
   }
 }
 window.setFloorFitMode = setFloorFitMode;
@@ -3151,10 +3203,16 @@ function renderFloorPlan() {
         `;
       } else {
         const anyStopped = occ.items.some(it => it.status === 'stopped');
+        const allQueuedGiling = occ.items.length > 0 && occ.items.every(it => it.currentStepId === 'C-giling' && it.isQueuedForGiling);
+
         if (anyStopped) {
           stoppedCount++;
           cardClass += ' has-kendala';
           statusPillHtml = `<span class="m-status-pill stopped">⚠️ KENDALA</span>`;
+        } else if (allQueuedGiling) {
+          activeCount++;
+          cardClass += ' is-active is-queued';
+          statusPillHtml = `<span class="m-status-pill queued" title="Seluruh muatan (${occ.totalTonase}T) sedang menunggu giliran Mesin Giling"><span class="summary-dot waiting-dot" style="width:5px;height:5px;background:#f59e0b;"></span> Antri Giling</span>`;
         } else {
           activeCount++;
           cardClass += ' is-active';
@@ -3165,7 +3223,7 @@ function renderFloorPlan() {
           }
         }
 
-        const meterColor = occ.percent >= 100 ? '#ef4444' : (occ.percent > 70 ? '#f59e0b' : '#10b981');
+        const meterColor = occ.percent >= 100 ? '#ef4444' : (allQueuedGiling ? '#f59e0b' : (occ.percent > 70 ? '#f59e0b' : '#10b981'));
         const capMeterHtml = `
           <div class="m-cap-strip" title="Terisi: ${occ.totalTonase}/30 Ton (${occ.percent}%) • Sisa ${occ.remainingCapacity} Ton">
             <div class="m-cap-bar-bg">
@@ -3181,17 +3239,26 @@ function renderFloorPlan() {
         const batchChipsHtml = `
           <div class="m-batches-stack">
             ${occ.items.map(it => {
-              const itDuration = it.stepHistory?.[stepId]?.startedAt ? calcDuration(it.stepHistory[stepId].startedAt) : '-';
+              const isQueuedGiling = it.currentStepId === 'C-giling' && it.isQueuedForGiling;
+              const itDuration = isQueuedGiling
+                ? (it.stepHistory?.['C-giling']?.queuedAt ? calcDuration(it.stepHistory['C-giling'].queuedAt) : (it.stepHistory?.[stepId]?.startedAt ? calcDuration(it.stepHistory[stepId].startedAt) : '-'))
+                : (it.stepHistory?.[stepId]?.startedAt ? calcDuration(it.stepHistory[stepId].startedAt) : '-');
               const isItStopped = it.status === 'stopped';
               const ownerName = escapeHtml(it.supir || it.name || 'Padi');
               const codeText = escapeHtml(it.code);
               const tonText = `${it.tonase || 10}T`;
+              const isItRecycled = (it.recycleCount || 0) > 0;
 
               let miniBtns = '';
               if (isItStopped) {
                 miniBtns = `
                   <button class="m-btn-mini resume" onclick="event.stopPropagation(); resumeMachine('${it.id}')" title="Resume batch ${codeText}">Resume</button>
                   <button class="m-btn-mini stop" onclick="event.stopPropagation(); openStopModal('${it.id}')" title="Ubah kendala">Alasan</button>
+                `;
+              } else if (isQueuedGiling) {
+                miniBtns = `
+                  <button class="m-btn-mini" style="background:rgba(245,158,11,0.22); color:#fbbf24; border:1px solid rgba(245,158,11,0.45); font-weight:700; cursor:pointer;" onclick="event.stopPropagation(); openDetailModal('${it.id}')" title="Sedang mengantri masuk Mesin Giling (${it.gilingType || 'PK'}). Klik untuk detail.">Antri</button>
+                  <button class="m-btn-mini stop" onclick="event.stopPropagation(); openStopModal('${it.id}')" title="Hentikan batch ${codeText}">Stop</button>
                 `;
               } else {
                 miniBtns = `
@@ -3200,16 +3267,22 @@ function renderFloorPlan() {
                 `;
               }
 
+              const chipClass = isItStopped 
+                ? 'is-stopped' 
+                : (isQueuedGiling ? 'is-queued' : (isItRecycled ? 'is-recycled is-running' : 'is-running'));
+
               return `
-                <div class="m-unit-batch-chip ${isItStopped ? 'is-stopped' : 'is-running'}" onclick="event.stopPropagation(); openDetailModal('${it.id}')" title="Atas nama: ${ownerName} (${codeText} - ${tonText}). Klik untuk detail riwayat.">
+                <div class="m-unit-batch-chip ${chipClass}" onclick="event.stopPropagation(); openDetailModal('${it.id}')" title="Atas nama: ${ownerName} (${codeText} - ${tonText})${isQueuedGiling ? ` • ⏳ Antri Mesin Giling (${it.gilingType || 'PK'}) - Masih tersimpan di ${machineName}` : ''}${isItRecycled ? ` • Pernah diulang ${it.recycleCount}x (Masih Basah)` : ''}. Klik untuk detail riwayat.">
                   <div class="m-chip-row-top">
                     <span class="m-chip-code">${codeText}</span>
+                    ${isItRecycled ? `<span class="m-chip-recycle-badge" title="Pernah diulang ${it.recycleCount}x (Masih Basah)">♻️${it.recycleCount}x</span>` : ''}
+                    ${isQueuedGiling ? `<span class="m-chip-recycle-badge" style="background:rgba(245,158,11,0.2); color:#fbbf24; border-color:rgba(245,158,11,0.5);" title="Antri Mesin Giling (${it.gilingType || 'PK'})">⏳Antri</span>` : ''}
                     <span class="m-chip-owner" title="Atas nama: ${ownerName}">${ownerName}</span>
                     <span class="m-chip-ton">${tonText}</span>
                   </div>
                   <div class="m-chip-row-bot">
-                    <span class="m-chip-timer" style="${isItStopped ? 'color:#ef4444; font-weight:700;' : ''}">
-                      ${isItStopped ? '⚠️ Stop: ' + escapeHtml(it.stopReason || 'Kendala') : itDuration}
+                    <span class="m-chip-timer" style="${isItStopped ? 'color:#ef4444; font-weight:700;' : (isQueuedGiling ? 'color:#fbbf24; font-weight:600;' : '')}">
+                      ${isItStopped ? '⚠️ Stop: ' + escapeHtml(it.stopReason || 'Kendala') : (isQueuedGiling ? '⏳ Antri ' + itDuration : itDuration)}
                     </span>
                     <div class="m-chip-actions" onclick="event.stopPropagation();">
                       ${miniBtns}
@@ -3231,7 +3304,7 @@ function renderFloorPlan() {
         const pillLabel = info.state === 'maintenance' ? 'PERBAIKAN' : 'KENDALA';
         statusPillHtml = `<span class="m-status-pill stopped">${pillLabel}</span>`;
         const titleText = info.item 
-          ? `<strong>${escapeHtml(info.item.code)}</strong>`
+          ? `<strong>${escapeHtml(info.item.code)}</strong>${info.item.recycleCount > 0 ? ` <span class="m-chip-recycle-badge" style="font-size:9px; padding:1px 5px; margin-left:3px;" title="Pernah diulang ${info.item.recycleCount}x (Masih Basah)">♻️ Ulang ${info.item.recycleCount}x</span>` : ''}`
           : `<strong style="color:#ef4444; font-size:10.5px;">PERBAIKAN</strong>`;
         const timerLabel = info.state === 'maintenance' ? 'Perbaikan' : 'Terhenti';
         let quickBtns = info.state === 'maintenance' ? `
@@ -3254,6 +3327,7 @@ function renderFloorPlan() {
         bodyHtml = `
           <div class="m-batch-highlight">
             <strong>${escapeHtml(info.item.code)}</strong>
+            ${info.item.recycleCount > 0 ? `<span class="m-chip-recycle-badge" style="font-size:9px; padding:1px 5px; margin-left:3px;" title="Pernah diulang ${info.item.recycleCount}x (Masih Basah)">♻️ Ulang ${info.item.recycleCount}x</span>` : ''}
             <span style="font-size: 10.5px; opacity: 0.85;">(${info.item.tonase || 10}T)</span>
           </div>
           <div class="m-batch-sub" title="${escapeHtml(info.item.name)}">${escapeHtml(info.item.name)}</div>
@@ -3279,7 +3353,7 @@ function renderFloorPlan() {
           <div class="giling-queue-box" style="margin-top: 6px; padding: 4px 6px;">
             <div class="giling-queue-title" style="font-size: 9.5px;">Antrian Mix (${queuedMix.length} Menunggu):</div>
             <div class="giling-queue-chips">
-              ${queuedMix.map(q => `<span class="queue-chip-tag" title="${escapeHtml(q.name)}">${escapeHtml(q.code)}</span>`).join('')}
+              ${queuedMix.map(q => `<span class="queue-chip-tag" title="${escapeHtml(q.name)}${q.recycleCount > 0 ? ` (Pernah diulang ${q.recycleCount}x)` : ''}">${escapeHtml(q.code)}${q.recycleCount > 0 ? ` <strong style="color:#f59e0b;">[♻️${q.recycleCount}x]</strong>` : ''}</span>`).join('')}
             </div>
           </div>
         `;
@@ -3385,6 +3459,7 @@ function renderFloorPlan() {
     gilingBodyHtml = `
       <div class="m-batch-highlight">
         <strong>${escapeHtml(gilingState.item.code)}</strong>
+        ${gilingState.item.recycleCount > 0 ? `<span class="m-chip-recycle-badge" style="font-size:9px; padding:1px 5px; margin-left:3px;" title="Pernah diulang ${gilingState.item.recycleCount}x (Masih Basah)">♻️ Ulang ${gilingState.item.recycleCount}x</span>` : ''}
         <span style="font-size: 10px; opacity: 0.85;">(${gilingState.item.tonase || 10} Ton)</span>
       </div>
       <div class="m-batch-sub">${escapeHtml(gilingState.item.name)}</div>
@@ -3407,7 +3482,11 @@ function renderFloorPlan() {
       <div class="giling-queue-box">
         <div class="giling-queue-title">Antrian Giling (${queuedGiling.length} Menunggu):</div>
         <div class="giling-queue-chips">
-          ${queuedGiling.map(q => `<span class="queue-chip-tag" title="${escapeHtml(q.name)}">${escapeHtml(q.code)} (${escapeHtml(q.gilingType || 'PK')})</span>`).join('')}
+          ${queuedGiling.map(q => {
+            const originSilo = q.assignedMachines?.['C-silo'] || q.stepHistory?.['C-silo']?.machine;
+            const shortOrigin = originSilo ? originSilo.replace('Silo Kering ', 'SK ') : '';
+            return `<span class="queue-chip-tag" title="${escapeHtml(q.name)}${originSilo ? ` • Masih tersimpan di ${originSilo}` : ''}${q.recycleCount > 0 ? ` (Pernah diulang ${q.recycleCount}x)` : ''}">${escapeHtml(q.code)}${q.recycleCount > 0 ? ` <strong style="color:#f59e0b;">[♻️${q.recycleCount}x]</strong>` : ''}${shortOrigin ? ` <span style="opacity:0.9; font-size:9.5px; color:#93c5fd; font-weight:800;">[${shortOrigin}]</span>` : ''} (${escapeHtml(q.gilingType || 'PK')})</span>`;
+          }).join('')}
         </div>
       </div>
     `;
@@ -3537,7 +3616,7 @@ function renderFloorPlan() {
             <span>Di Gudang</span>
           </div>
           <div class="finish-card-count">${gudangBatches.length} <span style="font-size:12px;font-weight:normal;">Lot</span></div>
-          <div class="finish-card-sub">${gudangBatches.map(b => b.code).join(', ') || 'Belum ada'}</div>
+          <div class="finish-card-sub">${gudangBatches.map(b => `${escapeHtml(b.code)}${b.recycleCount > 0 ? ` [♻️${b.recycleCount}x]` : ''}`).join(', ') || 'Belum ada'}</div>
         </div>
 
         <div class="finish-card mobil">
@@ -3545,7 +3624,7 @@ function renderFloorPlan() {
             <span>Di Mobil</span>
           </div>
           <div class="finish-card-count">${mobilBatches.length} <span style="font-size:12px;font-weight:normal;">Lot</span></div>
-          <div class="finish-card-sub">${mobilBatches.map(b => b.code).join(', ') || 'Belum ada'}</div>
+          <div class="finish-card-sub">${mobilBatches.map(b => `${escapeHtml(b.code)}${b.recycleCount > 0 ? ` [♻️${b.recycleCount}x]` : ''}`).join(', ') || 'Belum ada'}</div>
         </div>
       </div>
     </div>
@@ -3646,8 +3725,8 @@ function getEligibleItemsForMachine(stepId, machineName) {
     });
   }
 
-  // 3. Alur Pengulangan (Gabah Masih Basah): Jika membuka Dryer atau Silo Basah, muatan Silo Kering (C-silo) yang masih basah dapat dialirkan ke sini
-  if (stepId === 'B-dryer' || stepId === 'A-silo') {
+  // 3. Alur Pengulangan (Gabah Masih Basah): Jika membuka Silo Basah, muatan Silo Kering (C-silo) yang masih basah dapat dialirkan ke sini
+  if (stepId === 'A-silo') {
     const processedSkUnits = new Set();
     const skItems = items.filter(i => i.currentStepId === 'C-silo' && (i.status === 'active' || i.status === 'stopped'));
 
@@ -3713,7 +3792,7 @@ function assignExistingItemToMachine(itemId, targetStepId, selectedMachine, gili
   const oldStepId = item.currentStepId;
   const oldMachine = item.assignedMachines?.[oldStepId] || oldStepId;
   const targetIdx = getSubstepIndex(targetStepId);
-  const isRecyclingFlow = (oldStepId === 'C-silo' && (targetStepId === 'B-dryer' || targetStepId === 'A-silo'));
+  const isRecyclingFlow = (oldStepId === 'C-silo' && targetStepId === 'A-silo');
 
   // Proses seluruh barang dalam grup secara bersamaan ke target mesin yang sama
   coItems.forEach((currItem, idxInGroup) => {
@@ -3839,7 +3918,7 @@ function assignExistingItemToMachine(itemId, targetStepId, selectedMachine, gili
 
   if (isRecyclingFlow) {
     const unitLabel = coItems.length > 1 ? `Muatan ${coItems.length} padi dari ${oldMachine}` : `${item.code} (${oldMachine})`;
-    showToast(`⚠️ Alur Pengulangan: ${unitLabel} (${roundedGroupTonase} Ton) berhasil dialirkan kembali ke ${selectedMachine} untuk pengeringan ulang (gabah masih basah)!`);
+    showToast(`♻️ Alur Pengulangan: ${unitLabel} (${roundedGroupTonase} Ton) berhasil dialirkan kembali ke ${selectedMachine} untuk pengeringan ulang (gabah masih basah)!`);
   } else if (coItems.length > 1) {
     showToast(`Muatan ${coItems.length} padi dari ${oldMachine} (Total ${roundedGroupTonase} Ton) berhasil dimasukkan bersamaan ke ${selectedMachine}!`);
   } else {
@@ -4006,7 +4085,7 @@ function openMachineModal(stepId, machineName) {
             let codeDisplay = '';
             let ownerDisplay = '';
             let subDisplay = '';
-            const badgeLabel = elig.type === 'standby' ? 'STANDBY' : (elig.type === 'recycle' ? '⚠️ MASIH BASAH' : elig.label);
+            const badgeLabel = elig.type === 'standby' ? 'STANDBY' : (elig.type === 'recycle' ? '♻️ MASIH BASAH' : elig.label);
             const tagClass = elig.type === 'standby' ? 'tag-standby' : (elig.type === 'recycle' ? 'tag-recycle' : 'tag-transfer');
 
             if (isGroup) {
@@ -4050,7 +4129,7 @@ function openMachineModal(stepId, machineName) {
                     ` : (elig.type === 'recycle' ? `
                       <button type="button" class="btn btn-sm" style="background: linear-gradient(135deg, #d97706, #b45309); border:none; color:#fff; font-weight:700; padding: 6px 11px; font-size: 11px; border-radius: 8px; white-space: nowrap; cursor: pointer;" 
                               onclick="assignExistingItemToMachine('${it.id}', '${stepId}', '${escapeHtml(machineName)}')">
-                        ${stepId === 'B-dryer' ? `Keringkan Ulang (${itTon}T)` : `Ulang Silo Basah (${itTon}T)`}
+                        Ulang Silo Basah (${itTon}T)
                       </button>
                     ` : `
                       <button type="button" class="btn btn-add btn-sm" style="background: linear-gradient(135deg, #10b981, #059669); border:none; font-weight:700; padding: 6px 12px; font-size: 11.5px; border-radius: 8px; white-space: nowrap; cursor: pointer;" 
@@ -4140,9 +4219,28 @@ function openMachineModal(stepId, machineName) {
             <span>Daftar Padi di Mesin Ini (${occ.items.length} Batch):</span>
             <span style="font-size: 10.5px; color: var(--text-muted); font-weight: normal;">Atas Nama Pemilik / Supir</span>
           </div>
+          ${stepId === 'C-silo' && occ.items.some(it => it.currentStepId === 'C-giling' && it.isQueuedForGiling) ? `
+            <div style="margin-bottom: 10px; background: rgba(245, 158, 11, 0.1); border: 1.5px solid rgba(245, 158, 11, 0.4); border-radius: 10px; padding: 8px 12px; font-size: 11.5px; color: #fde68a; line-height: 1.4;">
+              ⏳ <strong>Status Antri Mesin Giling:</strong> Gabah masih tersimpan secara fisik di ${escapeHtml(machineName)}. Menunggu giliran mesin giling dan akan dialirkan otomatis saat mesin giling kosong.
+            </div>
+          ` : (stepId === 'C-silo' && occ.items.length > 1 ? `
+            <div style="margin-bottom: 10px; background: rgba(245, 158, 11, 0.08); border: 1.5px solid rgba(245, 158, 11, 0.35); border-radius: 10px; padding: 8px 12px; display: flex; align-items: center; justify-content: space-between; gap: 8px;">
+              <div style="font-size: 11px; color: #fde68a; line-height: 1.35;">
+                ♻️ <strong>Gabah Masih Basah?</strong> Seluruh muatan unit (${occ.items.length} batch &bull; ${occ.totalTonase} Ton) akan dialirkan kembali bersamaan.
+              </div>
+              <button type="button" class="btn btn-sm" style="color: #ffffff; background: linear-gradient(135deg, #d97706, #b45309); border: none; font-size: 11px; padding: 6px 12px; font-weight: 700; border-radius: 8px; cursor: pointer; white-space: nowrap; flex-shrink: 0;"
+                      onclick="openStepConfirmModal('${occ.items[0].id}', 'A-silo', false); closeMachineModal();"
+                      title="Kembalikan semua gabah di unit Silo Kering ini ke Silo Basah karena masih basah">
+                Ulang Silo Basah
+              </button>
+            </div>
+          ` : '')}
           <div style="display: flex; flex-direction: column; gap: 8px; max-height: 240px; overflow-y: auto; padding-right: 4px;">
             ${occ.items.map(it => {
-              const startedAt = it.stepHistory?.[stepId]?.startedAt;
+              const isQueuedGiling = it.currentStepId === 'C-giling' && it.isQueuedForGiling;
+              const startedAt = isQueuedGiling 
+                ? (it.stepHistory?.['C-giling']?.queuedAt || it.stepHistory?.[stepId]?.startedAt)
+                : it.stepHistory?.[stepId]?.startedAt;
               const durasi = startedAt ? calcDuration(startedAt) : '-';
               const isStopped = it.status === 'stopped';
               const supirName = it.supir || it.name || '-';
@@ -4150,16 +4248,26 @@ function openMachineModal(stepId, machineName) {
               const jenis = it.jenisPadi || it.jenis || 'Inpari 32';
 
               return `
-                <div style="background: rgba(255, 255, 255, 0.035); border: 1px solid ${isStopped ? 'rgba(239,68,68,0.5)' : 'rgba(255,255,255,0.1)'}; border-radius: 10px; padding: 9px 11px; font-size: 12px;">
+                <div style="background: rgba(255, 255, 255, 0.035); border: 1px solid ${isStopped ? 'rgba(239,68,68,0.5)' : (isQueuedGiling ? 'rgba(245,158,11,0.5)' : 'rgba(255,255,255,0.1)')}; border-radius: 10px; padding: 9px 11px; font-size: 12px;">
                   <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-                    <div style="display: flex; align-items: center; gap: 6px;">
+                    <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
                       <span style="font-family: 'JetBrains Mono', monospace; font-weight: 800; color: #60a5fa; font-size: 12px;">${escapeHtml(it.code)}</span>
+                      ${it.recycleCount > 0 ? `
+                        <span class="badge-item-recycle" style="font-size: 9.5px; padding: 1px 5.5px;" title="Barang ini pernah diulang ${it.recycleCount}x (Gabah Masih Basah)">
+                          ♻️ Diulang ${it.recycleCount}x
+                        </span>
+                      ` : ''}
+                      ${isQueuedGiling ? `
+                        <span style="background: rgba(245, 158, 11, 0.2); border: 1px solid rgba(245, 158, 11, 0.5); padding: 1px 6px; border-radius: 5px; font-weight: 800; color: #fbbf24; font-size: 10px;">
+                          ⏳ Antri Giling (${escapeHtml(it.gilingType || 'PK')})
+                        </span>
+                      ` : ''}
                       <strong style="color: #ffffff; font-size: 11.5px;">${escapeHtml(supirName)}</strong>
                     </div>
                     <span style="background: rgba(16, 185, 129, 0.15); border: 1px solid rgba(16, 185, 129, 0.3); padding: 1px 6px; border-radius: 5px; font-weight: 800; color: #34d399; font-size: 10.5px;">${it.tonase || 10} Ton</span>
                   </div>
                   <div style="font-size: 10.5px; color: var(--text-lavender); margin-bottom: 6px;">
-                    Truk: <strong>${escapeHtml(trukPlat)}</strong> &bull; Jenis: ${escapeHtml(jenis)} &bull; ${isStopped ? `<span style="color:#ef4444; font-weight:700;">⚠️ Terhenti: ${escapeHtml(it.stopReason || 'Kendala')}</span>` : `Jalan ${durasi}`}
+                    Truk: <strong>${escapeHtml(trukPlat)}</strong> &bull; Jenis: ${escapeHtml(jenis)} &bull; ${isStopped ? `<span style="color:#ef4444; font-weight:700;">⚠️ Terhenti: ${escapeHtml(it.stopReason || 'Kendala')}</span>` : (isQueuedGiling ? `<span style="color:#fbbf24; font-weight:600;">⏳ Antri Giling: ${durasi} (Fisik masih di ${escapeHtml(machineName)})</span>` : `Jalan ${durasi}`)}
                   </div>
                   <div style="display: flex; gap: 5px; justify-content: flex-end; flex-wrap: wrap;">
                     <button class="btn btn-outline btn-sm" style="font-size: 10.5px; padding: 2.5px 7px;" onclick="openDetailModal('${it.id}'); closeMachineModal();">Detail</button>
@@ -4168,11 +4276,12 @@ function openMachineModal(stepId, machineName) {
                     ` : `
                       <button class="btn btn-outline btn-sm" style="color:#f87171; border-color:rgba(239,68,68,0.4); font-size: 10.5px; padding: 2.5px 7px;" onclick="openStopModal('${it.id}'); closeMachineModal();">Stop</button>
                     `}
-                    ${stepId === 'C-silo' ? `
-                      <button class="btn btn-outline btn-sm" style="color:#f59e0b; border-color:rgba(245,158,11,0.5); font-size: 10px; padding: 2.5px 6px;" onclick="openStepConfirmModal('${it.id}', 'B-dryer', false); closeMachineModal();" title="Kembalikan gabah ke Dryer karena masih basah">Ulang Dryer</button>
-                      <button class="btn btn-outline btn-sm" style="color:#f59e0b; border-color:rgba(245,158,11,0.5); font-size: 10px; padding: 2.5px 6px;" onclick="openStepConfirmModal('${it.id}', 'A-silo', false); closeMachineModal();" title="Kembalikan gabah ke Silo Basah karena masih basah">Ulang SB</button>
+                    ${!isQueuedGiling && stepId === 'C-silo' && occ.items.length === 1 ? `
+                      <button class="btn btn-outline btn-sm" style="color:#f59e0b; border-color:rgba(245,158,11,0.5); font-size: 10px; padding: 2.5px 6px;" onclick="openStepConfirmModal('${it.id}', 'A-silo', false); closeMachineModal();" title="Kembalikan gabah ke Silo Basah karena masih basah">Ulang Silo Basah</button>
                     ` : ''}
-                    <button class="btn btn-advance btn-sm" style="font-size: 10.5px; padding: 2.5px 7px;" onclick="advanceOneStep('${it.id}'); closeMachineModal();">Lanjut</button>
+                    ${!isQueuedGiling ? `
+                      <button class="btn btn-advance btn-sm" style="font-size: 10.5px; padding: 2.5px 7px;" onclick="advanceOneStep('${it.id}'); closeMachineModal();">Lanjut</button>
+                    ` : ''}
                   </div>
                 </div>
               `;
@@ -4201,8 +4310,13 @@ function openMachineModal(stepId, machineName) {
             <span style="font-weight: 800; font-size: 12.5px; color: #ffffff;">Barang Sedang Diproses:</span>
             <span class="m-status-pill ${isStopped ? 'stopped' : 'active'}" style="font-size: 9.5px; padding: 1.5px 6px;">${isStopped ? 'TERHENTI' : 'AKTIF'}</span>
           </div>
-          <div style="font-size: 13.5px; font-weight: 800; color: #60a5fa; margin-bottom: 2px;">
-            ${escapeHtml(item.code)} - ${escapeHtml(item.name)}
+          <div style="font-size: 13.5px; font-weight: 800; color: #60a5fa; margin-bottom: 2px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
+            <span>${escapeHtml(item.code)} - ${escapeHtml(item.name)}</span>
+            ${item.recycleCount > 0 ? `
+              <span class="badge-item-recycle" style="font-size: 10px; padding: 1.5px 6px;" title="Barang ini pernah diulang ${item.recycleCount}x (Gabah Masih Basah)">
+                ♻️ Diulang ${item.recycleCount}x
+              </span>
+            ` : ''}
           </div>
           <div style="font-size: 11px; color: var(--text-lavender); margin-bottom: 8px;">
             Jenis: ${escapeHtml(item.jenis || '-')} &bull; Tonase: ${item.tonase || 10} Ton &bull; ${isStopped ? `<span style="color:#ef4444; font-weight:700;">⚠️ ${escapeHtml(item.stopReason || 'Kendala')}</span>` : `Jalan ${durasi}`}
@@ -4239,11 +4353,19 @@ function openMachineModal(stepId, machineName) {
             <div style="display: flex; flex-direction: column; gap: 6px;">
               ${queuedGiling.map((q, idx) => {
                 const qDuration = q.stepHistory?.['C-giling']?.queuedAt ? calcDuration(q.stepHistory['C-giling'].queuedAt) : '-';
+                const originSilo = q.assignedMachines?.['C-silo'] || q.stepHistory?.['C-silo']?.machine;
+                const shortOrigin = originSilo ? originSilo.replace('Silo Kering ', 'SK ') : '';
                 return `
                   <div style="display: flex; justify-content: space-between; align-items: center; background: rgba(0, 0, 0, 0.25); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 8px; padding: 7px 10px; font-size: 11.5px;">
                     <div>
                       <span style="font-weight: 800; color: #f59e0b; margin-right: 6px;">#${idx + 1}</span>
                       <strong style="color: #60a5fa;">${escapeHtml(q.code)}</strong>
+                      ${q.recycleCount > 0 ? `
+                        <span class="badge-item-recycle" style="font-size: 8.5px; padding: 0.5px 4.5px;" title="Barang ini pernah diulang ${q.recycleCount}x (Gabah Masih Basah)">
+                          ♻️ Diulang ${q.recycleCount}x
+                        </span>
+                      ` : ''}
+                      ${shortOrigin ? `<span style="background:rgba(59,130,246,0.18); border:1px solid rgba(59,130,246,0.35); padding:1px 5px; border-radius:4px; font-size:9.5px; color:#93c5fd; margin-left:4px;" title="Fisik gabah masih tersimpan di ${escapeHtml(originSilo)}">Di ${escapeHtml(shortOrigin)}</span>` : ''}
                       <span style="color: var(--text-lavender); margin-left: 4px;">${escapeHtml(q.supir || q.name || '-')} (${q.tonase || 10}T)</span>
                     </div>
                     <div style="display: flex; align-items: center; gap: 8px;">
@@ -4275,6 +4397,11 @@ function openMachineModal(stepId, machineName) {
                     <div>
                       <span style="font-weight: 800; color: #f59e0b; margin-right: 6px;">#${idx + 1}</span>
                       <strong style="color: #60a5fa;">${escapeHtml(q.code)}</strong>
+                      ${q.recycleCount > 0 ? `
+                        <span class="badge-item-recycle" style="font-size: 8.5px; padding: 0.5px 4.5px;" title="Barang ini pernah diulang ${q.recycleCount}x (Gabah Masih Basah)">
+                          ♻️ Diulang ${q.recycleCount}x
+                        </span>
+                      ` : ''}
                       <span style="color: var(--text-lavender); margin-left: 4px;">${escapeHtml(q.supir || q.name || '-')} (${q.tonase || 10}T)</span>
                     </div>
                     <div style="display: flex; align-items: center; gap: 8px;">
@@ -4444,7 +4571,7 @@ function renderTable() {
           </div>
         <div class="item-name item-name-clickable" onclick="openEditModal('${item.id}')" title="Klik untuk ubah data barang">
           ${escapeHtml(item.name)}
-          ${item.recycleCount > 0 ? `<span style="display:inline-flex; align-items:center; gap:3px; margin-left:6px; font-size:10px; font-weight:700; padding:1px 6px; border-radius:4px; background:rgba(245,158,11,0.18); border:1px solid rgba(245,158,11,0.45); color:#f59e0b;" title="Gabah telah diulang pengeringan ${item.recycleCount}x karena masih basah">⚠️ Ulang ${item.recycleCount}x (Masih Basah)</span>` : ''}
+          ${item.recycleCount > 0 ? `<span style="display:inline-flex; align-items:center; gap:3px; margin-left:6px; font-size:10px; font-weight:700; padding:1px 6px; border-radius:4px; background:rgba(245,158,11,0.18); border:1px solid rgba(245,158,11,0.45); color:#f59e0b;" title="Gabah telah diulang pengeringan ${item.recycleCount}x karena masih basah">♻️ Ulang ${item.recycleCount}x (Masih Basah)</span>` : ''}
         </div>
         ${supirTrukText ? `<div style="font-size: 11px; color: var(--text-lavender); margin-1px 0 3px 0;">${supirTrukText} (${item.tonase || 10}T)</div>` : ''}
         <div class="item-badge-pos ${posClass}">${posText}</div>
@@ -4581,7 +4708,14 @@ function openDetailModal(itemId) {
   activeModalItemId = itemId;
 
   document.getElementById('modalCode').textContent = item.code;
-  document.getElementById('modalName').textContent = item.name;
+  const modalNameEl = document.getElementById('modalName');
+  if (modalNameEl) {
+    if (item.recycleCount > 0) {
+      modalNameEl.innerHTML = `${escapeHtml(item.name)} <span class="badge-item-recycle" style="font-size: 11px; vertical-align: middle; margin-left: 6px;" title="Barang ini pernah diulang ${item.recycleCount}x (Gabah Masih Basah)">♻️ Diulang ${item.recycleCount}x</span>`;
+    } else {
+      modalNameEl.textContent = item.name;
+    }
+  }
   document.getElementById('modalMeta').textContent = item.masukAt ? `Masuk Alur: ${formatDateTimeShort(item.masukAt)}` : 'Status: Belum Dimulai (Kosong)';
 
   const currentStep = getSubstep(item.currentStepId);
@@ -4616,6 +4750,18 @@ function openDetailModal(itemId) {
   const tonaseDisplay = item.tonaseAkhir ? `${item.tonaseAkhir} Ton (Awal: ${item.tonase || '-'})` : (item.tonase ? `${item.tonase} Ton` : '-');
   document.getElementById('modalTonase').textContent = tonaseDisplay;
 
+  // Tampilkan tanda / badge pengulangan pada info summary strip
+  const ulangContEl = document.getElementById('modalUlangContainer');
+  const ulangValEl = document.getElementById('modalUlangVal');
+  if (ulangContEl && ulangValEl) {
+    if (item.recycleCount > 0) {
+      ulangContEl.style.display = 'flex';
+      ulangValEl.innerHTML = `♻️ Diulang ${item.recycleCount}x (Masih Basah)`;
+    } else {
+      ulangContEl.style.display = 'none';
+    }
+  }
+
   // Render Trouble History Banner jika ada kejadian stop tercatat atau alur pengulangan
   const troubleBannerEl = document.getElementById('modalTroubleBanner');
   if (troubleBannerEl) {
@@ -4631,11 +4777,13 @@ function openDetailModal(itemId) {
         </div>
       `;
     }
-    if (item.recycleCount > 0 && item.recycleLog && item.recycleLog.length > 0) {
-      const logsText = item.recycleLog.map(r => `<strong>${r.fromMachine || 'Silo Kering'} ➔ ${r.toMachine || r.toStep}</strong> (${formatTime(r.timestamp)} WIB)`).join(', ');
+    if (item.recycleCount > 0) {
+      const logsText = (item.recycleLog && item.recycleLog.length > 0)
+        ? item.recycleLog.map(r => `<strong>${escapeHtml(r.fromMachine || 'Silo Kering')} ➔ ${escapeHtml(r.toMachine || r.toStep)}</strong> (${formatTime(r.timestamp)} WIB)`).join(', ')
+        : 'Gabah dikembalikan ke Silo Basah untuk proses pengeringan ulang';
       bannersHtml += `
         <div class="modal-trouble-history-banner" style="background: rgba(245, 158, 11, 0.12); border-color: rgba(245, 158, 11, 0.45); color: #fde68a; margin-top: 8px;">
-          <span style="font-size: 16px;">⚠️</span>
+          <span style="font-size: 16px;">♻️</span>
           <div>
             <strong style="color: #f59e0b;">Pengulangan Siklus Mesin (${item.recycleCount}x Pengeringan Ulang):</strong>
             <span>Gabah di Silo Kering masih berkadar air tinggi dan dialirkan ulang: ${logsText}.</span>
@@ -5315,7 +5463,7 @@ window.switchLogbookView = switchLogbookView;
 
 function updateLogbookTabBadges() {
   const activeCount = items.filter(i => i.status !== 'completed').length;
-  const mutasiCount = items.filter(i => i.status === 'completed').length;
+  const mutasiCount = items.length; // Seluruh barang tercatat dalam mutasi alur & mutasi selesai
   const badgeActive = document.getElementById('badgeActiveCount');
   const badgeMutasi = document.getElementById('badgeMutasiCount');
   const totalCountEl = document.getElementById('logPadiTotalCount');
@@ -5331,14 +5479,10 @@ function setLogPadiFilter(filter) {
     btn.classList.toggle('active', btn.dataset.filter === filter);
   });
 
-  if (filter === 'completed') {
-    switchLogbookView('mutasi');
+  if (currentLogbookView === 'mutasi') {
+    renderMutasiRiwayat();
   } else {
-    if (currentLogbookView === 'mutasi') {
-      switchLogbookView('active');
-    } else {
-      renderLogPadiSheet();
-    }
+    renderLogPadiSheet();
   }
 }
 window.setLogPadiFilter = setLogPadiFilter;
@@ -5596,6 +5740,11 @@ function renderLogPadiSheet() {
         <div class="log-card-top-row">
           <div class="log-code-badge-col">
             <span class="log-code-box">${escapeHtml(item.code)}</span>
+            ${item.recycleCount > 0 ? `
+              <span class="badge-item-recycle" style="font-size: 9px; padding: 1px 5px;" title="Barang ini pernah diulang ${item.recycleCount}x (Gabah Masih Basah)">
+                ♻️ Ulang ${item.recycleCount}x
+              </span>
+            ` : ''}
             <span class="log-code-colon">:</span>
           </div>
           <div class="log-status-tag ${statusClass}">
@@ -5639,10 +5788,19 @@ function renderMutasiRiwayat() {
 
   updateLogbookTabBadges();
 
-  let completedList = items.filter(i => i.status === 'completed');
+  let mutasiList = [...items];
+
+  // Terapkan filter logbook (all, active, standby, completed)
+  if (currentLogPadiFilter === 'active') {
+    mutasiList = mutasiList.filter(i => i.status === 'active' || i.status === 'stopped');
+  } else if (currentLogPadiFilter === 'standby') {
+    mutasiList = mutasiList.filter(i => i.status === 'standby' || !i.currentStepId);
+  } else if (currentLogPadiFilter === 'completed') {
+    mutasiList = mutasiList.filter(i => i.status === 'completed');
+  } // 'all': tampilkan seluruh barang baik proses maupun selesai
 
   if (currentLogPadiSearch) {
-    completedList = completedList.filter(i => {
+    mutasiList = mutasiList.filter(i => {
       const code = (i.code || '').toLowerCase();
       const supir = (i.supir || '').toLowerCase();
       const truk = (i.truk || '').toLowerCase();
@@ -5656,21 +5814,26 @@ function renderMutasiRiwayat() {
     });
   }
 
-  const totalCompleted = completedList.length;
-  const totalTonase = completedList.reduce((acc, i) => acc + (parseFloat(i.tonaseAkhir || i.tonase) || 0), 0);
-  const countGudang = completedList.filter(i => i.selesaiLokasi !== 'Mobil').length;
-  const countMobil = completedList.filter(i => i.selesaiLokasi === 'Mobil').length;
+  const totalCount = mutasiList.length;
+  const totalTonase = mutasiList.reduce((acc, i) => acc + (parseFloat(i.tonaseAkhir || i.tonase) || 0), 0);
+  const countProses = mutasiList.filter(i => i.status === 'active' || i.status === 'stopped').length;
+  const countGudang = mutasiList.filter(i => i.status === 'completed' && i.selesaiLokasi !== 'Mobil').length;
+  const countMobil = mutasiList.filter(i => i.status === 'completed' && i.selesaiLokasi === 'Mobil').length;
 
   let contentHtml = `
     <div class="mutasi-summary-bar">
       <div class="mutasi-stats-cluster">
         <div class="mutasi-stat-box">
-          <span class="mutasi-stat-num">${totalCompleted} Batch</span>
-          <span class="mutasi-stat-lbl">Total Selesai</span>
+          <span class="mutasi-stat-num">${totalCount} Batch</span>
+          <span class="mutasi-stat-lbl">Total Mutasi</span>
         </div>
         <div class="mutasi-stat-box">
           <span class="mutasi-stat-num" style="color: #10b981;">${totalTonase.toFixed(1)} T</span>
           <span class="mutasi-stat-lbl">Total Tonase</span>
+        </div>
+        <div class="mutasi-stat-box">
+          <span class="mutasi-stat-num" style="color: #38bdf8;">${countProses} Padi</span>
+          <span class="mutasi-stat-lbl">Sedang Proses</span>
         </div>
         <div class="mutasi-stat-box">
           <span class="mutasi-stat-num" style="color: #60a5fa;">${countGudang} Padi</span>
@@ -5683,7 +5846,10 @@ function renderMutasiRiwayat() {
       </div>
 
       <div class="mutasi-actions-group">
-        <button type="button" class="btn btn-outline btn-sm" onclick="printMutasiReport()" title="Cetak Rekap Laporan Mutasi Barang Selesai">
+        <button type="button" class="btn btn-add btn-sm" onclick="openPilihItemMutasiModal()" title="Buat mutasi langsung ke Gudang atau Truk (tidak harus menunggu alur selesai)">
+          <span class="btn-icon">+</span> Buat Mutasi Barang
+        </button>
+        <button type="button" class="btn btn-outline btn-sm" onclick="printMutasiReport()" title="Cetak Rekap Laporan Mutasi Barang">
           Cetak Rekap Mutasi
         </button>
         <button type="button" class="btn btn-subtle btn-sm" onclick="exportMutasiCSV()" title="Unduh Data Mutasi format CSV / Excel">
@@ -5696,26 +5862,25 @@ function renderMutasiRiwayat() {
     </div>
   `;
 
-  if (completedList.length === 0) {
+  if (mutasiList.length === 0) {
     if (currentLogPadiSearch) {
       contentHtml += `
         <div class="log-empty-state" style="padding: 24px;">
-          
-          <div>Tidak ada riwayat mutasi cocok dengan pencarian <strong>"${escapeHtml(currentLogPadiSearch)}"</strong></div>
+          <div>Tidak ada data mutasi cocok dengan pencarian <strong>"${escapeHtml(currentLogPadiSearch)}"</strong></div>
           <button type="button" class="btn btn-outline btn-sm" onclick="clearLogPadiSearch()" style="margin-top: 8px;">Reset Pencarian</button>
         </div>
       `;
     } else {
       contentHtml += `
         <div class="log-empty-state" style="padding: 28px;">
-          
-          <div style="font-weight: 700; font-size: 13.5px; margin-bottom: 4px;">Belum ada riwayat barang yang selesai diproses</div>
+          <div style="font-weight: 700; font-size: 13.5px; margin-bottom: 4px;">Belum Ada Data Mutasi Barang</div>
           <div style="font-size: 11.5px; opacity: 0.8; max-width: 500px; margin: 0 auto 12px auto;">
-            Ketika barang menyelesaikan seluruh tahapan alur (Silo Basah ➔ Dryer ➔ Silo Kering ➔ Giling) dan dipindahkan ke Gudang atau Truk, riwayat mutasi akan otomatis tercatat di sini.
+            Seluruh pergerakan barang (sedang proses di mesin maupun selesai ke Gudang/Truk) otomatis tercatat di sini. Anda juga dapat langsung membuat mutasi barang kapan saja tanpa harus menunggu seluruh alur selesai.
           </div>
-          <button type="button" class="btn btn-outline btn-sm" onclick="switchLogbookView('active')">
-            Buka Tampilan Mesin Aktif
-          </button>
+          <div style="display: flex; justify-content: center; gap: 8px;">
+            <button type="button" class="btn btn-add btn-sm" onclick="openPilihItemMutasiModal()">+ Buat Mutasi Barang</button>
+            <button type="button" class="btn btn-outline btn-sm" onclick="switchLogbookView('active')">Buka Tampilan Mesin Aktif</button>
+          </div>
         </div>
       `;
     }
@@ -5723,17 +5888,28 @@ function renderMutasiRiwayat() {
     return;
   }
 
-  // Sort descending: yang baru selesai di atas
-  const sortedList = [...completedList].sort((a, b) => {
-    const timeA = a.completedAt ? new Date(a.completedAt).getTime() : 0;
-    const timeB = b.completedAt ? new Date(b.completedAt).getTime() : 0;
+  // Sort descending: barang selesai terbaru di atas, lalu barang masuk terbaru
+  const sortedList = [...mutasiList].sort((a, b) => {
+    const timeA = a.completedAt ? new Date(a.completedAt).getTime() : (a.masukAt ? new Date(a.masukAt).getTime() : 0);
+    const timeB = b.completedAt ? new Date(b.completedAt).getTime() : (b.masukAt ? new Date(b.masukAt).getTime() : 0);
     return timeB - timeA;
   });
 
   const tableRowsHtml = sortedList.map((item, idx) => {
-    const locBadge = item.selesaiLokasi === 'Mobil'
-      ? `<span class="mutasi-loc-badge mobil">Muat Truk</span>`
-      : `<span class="mutasi-loc-badge gudang">Masuk Gudang</span>`;
+    const isCompleted = item.status === 'completed';
+    const isStandby = item.status === 'standby' || !item.currentStepId;
+    const curMachine = (item.assignedMachines && item.assignedMachines[item.currentStepId]) || (item.currentStepId === 'C-giling' ? `Giling (${item.gilingType || 'PK'})` : (item.currentStepId || 'Mesin'));
+
+    let locBadge = '';
+    if (isCompleted) {
+      locBadge = item.selesaiLokasi === 'Mobil'
+        ? `<span class="mutasi-loc-badge mobil">Muat Truk</span>`
+        : `<span class="mutasi-loc-badge gudang">Masuk Gudang</span>`;
+    } else if (isStandby) {
+      locBadge = `<span class="mutasi-loc-badge" style="background: rgba(148, 163, 184, 0.15); border: 1px solid rgba(148, 163, 184, 0.4); color: #94a3b8;">Standby</span>`;
+    } else {
+      locBadge = `<span class="mutasi-loc-badge" style="background: rgba(56, 189, 248, 0.15); border: 1px solid rgba(56, 189, 248, 0.4); color: #38bdf8;">Di ${escapeHtml(curMachine)}</span>`;
+    }
 
     // Jejak alur mesin yang dilewati (lengkap dengan jejak siklus pengulangan)
     const trailItems = getItemJourneyTrail(item);
@@ -5749,50 +5925,60 @@ function renderMutasiRiwayat() {
           else label = t.machine || t.stepName;
 
           if (t.isRecycle) {
-            return `<span class="trail-mini-pill trail-recycle" title="Pengeringan Ulang Siklus ke-${t.cycle} (Gabah Masih Basah)">⚠️ ${escapeHtml(label)} [Ulang]</span>`;
+            return `<span class="trail-mini-pill trail-recycle" title="Pengeringan Ulang Siklus ke-${t.cycle} (Gabah Masih Basah)">♻️ ${escapeHtml(label)} [Ulang]</span>`;
           }
           return `<span class="trail-mini-pill">${escapeHtml(label)}</span>`;
         }).join(' ➔ ')
-      : '<span style="opacity: 0.6;">Alur Lengkap</span>';
+      : '<span style="opacity: 0.6;">Alur Berjalan</span>';
 
     // Durasi total
     let durationStr = '-';
-    if (item.masukAt && item.completedAt) {
+    if (isCompleted && item.masukAt && item.completedAt) {
       const durMs = Math.max(0, new Date(item.completedAt).getTime() - new Date(item.masukAt).getTime());
       const hours = Math.floor(durMs / (1000 * 60 * 60));
       const mins = Math.floor((durMs % (1000 * 60 * 60)) / (1000 * 60));
       durationStr = `${hours}j ${mins}m`;
+    } else if (!isCompleted && item.masukAt) {
+      durationStr = `${calcDuration(item.masukAt)} (Berjalan)`;
     }
 
     const tonaseAwal = item.tonase || 10;
     const tonaseAkhir = item.tonaseAkhir || item.tonase || 10;
 
-    // Catatan Mutasi Selesai
+    // Catatan Mutasi Selesai / Berjalan
     let catatanHtml = '';
     if (item.recycleCount > 0) {
       catatanHtml = `
         <div style="display: flex; flex-direction: column; gap: 3px;">
           <span style="display: inline-flex; align-items: center; gap: 4px; padding: 2px 7px; border-radius: 5px; background: rgba(245, 158, 11, 0.18); border: 1px solid rgba(245, 158, 11, 0.45); color: #f59e0b; font-weight: 800; font-size: 10.5px; width: fit-content;" title="Gabah diulang ${item.recycleCount}x pengeringan karena masih basah">
-            ⚠️ Diulang ${item.recycleCount}x (Masih Basah)
+            ♻️ Diulang ${item.recycleCount}x (Masih Basah)
           </span>
           ${item.catatanSelesai && item.catatanSelesai !== 'Selesai normal' && !item.catatanSelesai.toLowerCase().includes('diulang') ? `<span style="font-size: 11px; color: #cbd5e1;">${escapeHtml(item.catatanSelesai)}</span>` : ''}
         </div>
       `;
+    } else if (item.catatanSelesai) {
+      catatanHtml = `<span style="color: #cbd5e1;">${escapeHtml(item.catatanSelesai)}</span>`;
+    } else if (!isCompleted) {
+      catatanHtml = `<span style="color: #94a3b8; font-style: italic;">Sedang proses di ${escapeHtml(curMachine)}</span>`;
     } else {
-      catatanHtml = `<span style="color: #cbd5e1;">${escapeHtml(item.catatanSelesai || 'Selesai normal')}</span>`;
+      catatanHtml = `<span style="color: #cbd5e1;">Selesai normal</span>`;
     }
 
     return `
       <tr>
         <td style="text-align: center; color: var(--text-lavender); font-weight: 700;">${idx + 1}</td>
         <td style="white-space: nowrap;">
-          <div style="font-weight: 700; color: #ffffff;">${item.completedAt ? formatDateTimeShort(item.completedAt) : '-'}</div>
+          ${isCompleted ? `
+            <div style="font-weight: 700; color: #10b981;">Selesai: ${formatDateTimeShort(item.completedAt)}</div>
+          ` : `
+            <div style="font-weight: 700; color: #38bdf8;">🟢 Sedang Proses</div>
+          `}
           <div style="font-size: 10px; color: var(--text-lavender);">Masuk: ${item.masukAt ? formatDateTimeShort(item.masukAt) : '-'}</div>
         </td>
         <td>
           <div style="display: flex; align-items: center; gap: 5px; flex-wrap: wrap;">
             <span class="log-code-box" style="font-size: 11.5px; padding: 2px 7px;">${escapeHtml(item.code)}</span>
-            ${item.recycleCount > 0 ? `<span class="standby-picker-tag tag-recycle" style="font-size: 9px; padding: 1.5px 5px;" title="Gabah diulang ${item.recycleCount}x karena masih basah">⚠️ Ulang ${item.recycleCount}x</span>` : ''}
+            ${item.recycleCount > 0 ? `<span class="standby-picker-tag tag-recycle" style="font-size: 9px; padding: 1.5px 5px;" title="Gabah diulang ${item.recycleCount}x karena masih basah">♻️ Ulang ${item.recycleCount}x</span>` : ''}
           </div>
         </td>
         <td style="white-space: nowrap;">
@@ -5803,7 +5989,11 @@ function renderMutasiRiwayat() {
           <span class="spec-pill padi-pill" style="font-size: 11px;">${escapeHtml(item.jenisPadi || item.jenis || 'Gabah')}</span>
         </td>
         <td style="white-space: nowrap;">
-          <span style="opacity: 0.8; font-size: 10.5px;">${tonaseAwal}T</span> ➔ <strong style="color: #38bdf8; font-size: 12px;">${tonaseAkhir}T</strong>
+          ${isCompleted ? `
+            <span style="opacity: 0.8; font-size: 10.5px;">${tonaseAwal}T</span> ➔ <strong style="color: #38bdf8; font-size: 12px;">${tonaseAkhir}T</strong>
+          ` : `
+            <strong style="color: #38bdf8; font-size: 12px;">${tonaseAwal} Ton</strong> <span style="font-size: 10px; opacity: 0.7;">(Berjalan)</span>
+          `}
         </td>
         <td>${locBadge}</td>
         <td>
@@ -5818,8 +6008,12 @@ function renderMutasiRiwayat() {
         <td style="text-align: center; white-space: nowrap;">
           <div class="mutasi-actions-group" style="justify-content: center;">
             <button type="button" class="btn-log-action" onclick="openDetailModal('${item.id}')" title="Lihat riwayat alur lengkap">Detail</button>
-            <button type="button" class="btn-log-action" onclick="printMutasiSlip('${item.id}')" title="Cetak Surat Bukti Mutasi Barang Selesai">Cetak Slip</button>
-            <button type="button" class="btn-log-action" onclick="revertCompletedItem('${item.id}')" title="Batalkan status selesai & kembalikan ke mesin aktif" style="color: #f59e0b;">Batal Selesai</button>
+            <button type="button" class="btn-log-action" onclick="printMutasiSlip('${item.id}')" title="Cetak Surat Bukti Mutasi">Cetak Slip</button>
+            ${isCompleted ? `
+              <button type="button" class="btn-log-action" onclick="revertCompletedItem('${item.id}')" title="Batalkan status selesai & kembalikan ke mesin aktif" style="color: #f59e0b;">Batal Selesai</button>
+            ` : `
+              <button type="button" class="btn-log-action" onclick="openCompleteModal('${item.id}')" title="Buat mutasi langsung barang ini ke Gudang atau Truk (tidak harus menunggu alur selesai)" style="color: #34d399; font-weight: 800; border-color: rgba(52,211,153,0.4);">+ Buat Mutasi</button>
+            `}
           </div>
         </td>
       </tr>
@@ -5832,14 +6026,14 @@ function renderMutasiRiwayat() {
         <thead>
           <tr>
             <th style="width: 34px; text-align: center;">No</th>
-            <th>Waktu Selesai</th>
+            <th>Waktu Mutasi / Masuk</th>
             <th>Kode Barang</th>
-            <th>Supir & Truk</th>
+            <th>Supir &amp; Truk</th>
             <th>Jenis Padi</th>
             <th>Tonase (Awal ➔ Akhir)</th>
-            <th>Tujuan Mutasi</th>
+            <th>Status / Penempatan Mutasi</th>
             <th>Jejak Alur Mesin</th>
-            <th>Durasi Total</th>
+            <th>Durasi</th>
             <th>Catatan</th>
             <th style="text-align: center; width: 140px;">Aksi</th>
           </tr>
@@ -5854,6 +6048,56 @@ function renderMutasiRiwayat() {
   container.innerHTML = contentHtml;
 }
 window.renderMutasiRiwayat = renderMutasiRiwayat;
+
+/**
+ * MODAL PILIH BARANG UNTUK PEMBIKINAN MUTASI LANGSUNG
+ * Memungkinkan membuat mutasi barang kapan saja tanpa harus menunggu seluruh alur mesin selesai
+ */
+function openPilihItemMutasiModal() {
+  const activeItems = items.filter(i => i.status !== 'completed');
+  if (activeItems.length === 0) {
+    showToast('Seluruh barang saat ini sudah berstatus selesai mutasi.');
+    return;
+  }
+  const modal = document.getElementById('pilihMutasiModal');
+  const listEl = document.getElementById('pilihMutasiItemsList');
+  if (!modal || !listEl) {
+    openCompleteModal(activeItems[0].id);
+    return;
+  }
+
+  listEl.innerHTML = activeItems.map(it => {
+    const curMachine = (it.assignedMachines && it.assignedMachines[it.currentStepId]) || (it.currentStepId === 'C-giling' ? `Giling (${it.gilingType || 'PK'})` : (it.currentStepId || 'Standby'));
+    const isStopped = it.status === 'stopped';
+    return `
+      <div style="display: flex; justify-content: space-between; align-items: center; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; padding: 9px 12px; font-size: 12px;">
+        <div>
+          <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
+            <strong style="color: #60a5fa; font-family: monospace; font-size: 12.5px;">${escapeHtml(it.code)}</strong>
+            <span style="font-weight: 700; color: #ffffff;">${escapeHtml(it.supir || it.name || '-')}</span>
+            <span style="color: #fb923c; font-size: 11px;">(${escapeHtml(it.truk || '-')})</span>
+            ${it.recycleCount > 0 ? `<span class="badge-item-recycle" style="font-size: 9px; padding: 1px 5px;">♻️ Diulang ${it.recycleCount}x</span>` : ''}
+          </div>
+          <div style="font-size: 11px; color: var(--text-lavender); margin-top: 3px;">
+            Posisi: <strong style="color: ${isStopped ? '#ef4444' : '#38bdf8'};">${escapeHtml(curMachine)}</strong> &bull; Tonase: <strong>${it.tonase || 10}T</strong> &bull; ${escapeHtml(it.jenisPadi || it.jenis || 'Gabah')}
+          </div>
+        </div>
+        <button type="button" class="btn btn-add btn-sm" style="font-size: 11px; padding: 5px 12px; background: #059669; border: none; white-space: nowrap;" onclick="closePilihMutasiModal(); openCompleteModal('${it.id}');">
+          Pilih &amp; Buat Mutasi
+        </button>
+      </div>
+    `;
+  }).join('');
+
+  modal.classList.add('open');
+}
+window.openPilihItemMutasiModal = openPilihItemMutasiModal;
+
+function closePilihMutasiModal() {
+  const modal = document.getElementById('pilihMutasiModal');
+  if (modal) modal.classList.remove('open');
+}
+window.closePilihMutasiModal = closePilihMutasiModal;
 
 /**
  * BATALKAN SELESAI: Mengembalikan barang ke proses mesin aktif jika ada kekeliruan
@@ -5879,7 +6123,8 @@ function revertCompletedItem(itemId) {
 window.revertCompletedItem = revertCompletedItem;
 
 /**
- * CETAK SLIP BUKTI MUTASI BARANG SELESAI (SURAT PENGELUARAN / PENYIMPANAN GUDANG)
+ * CETAK SLIP BUKTI MUTASI BARANG (SURAT JALAN / PENGELUARAN / PENYIMPANAN GUDANG)
+ * Dapat dicetak kapan saja untuk barang dalam proses maupun selesai
  */
 function printMutasiSlip(itemId) {
   const item = items.find(i => i.id === itemId);
@@ -5888,10 +6133,16 @@ function printMutasiSlip(itemId) {
   const printArea = document.getElementById('printReportArea');
   if (!printArea) return;
 
+  const isCompleted = item.status === 'completed';
+  const curMachine = (item.assignedMachines && item.assignedMachines[item.currentStepId]) || (item.currentStepId === 'C-giling' ? `Giling (${item.gilingType || 'PK'})` : (item.currentStepId || 'Alur Permesinan'));
   const slipNo = `SLIP-MUT/${item.code}/${new Date().getFullYear()}`;
-  const selesaiTime = item.completedAt ? formatDateTime(item.completedAt) : formatDateTime(new Date());
+  const selesaiTime = isCompleted 
+    ? (item.completedAt ? formatDateTime(item.completedAt) : formatDateTime(new Date()))
+    : 'Sedang Proses (Belum Selesai)';
   const masukTime = item.masukAt ? formatDateTime(item.masukAt) : '-';
-  const locLabel = item.selesaiLokasi === 'Mobil' ? 'Langsung Muat Mobil / Truk' : 'Masuk Gudang Penyimpanan';
+  const locLabel = isCompleted
+    ? (item.selesaiLokasi === 'Mobil' ? 'Langsung Muat Mobil / Truk' : 'Masuk Gudang Penyimpanan')
+    : `Sedang Proses di Mesin (${curMachine})`;
 
   // Alur mesin
   const trailSteps = [];
@@ -5909,7 +6160,7 @@ function printMutasiSlip(itemId) {
       <!-- Header Surat -->
       <div style="border-bottom: 2.5px solid #000000; padding-bottom: 12px; margin-bottom: 18px; display: flex; justify-content: space-between; align-items: flex-start;">
         <div>
-          <h2 style="margin: 0; font-size: 20px; font-weight: 800; letter-spacing: 0.5px;">BUKTI MUTASI BARANG SELESAI PRODUKSI</h2>
+          <h2 style="margin: 0; font-size: 20px; font-weight: 800; letter-spacing: 0.5px;">${isCompleted ? 'BUKTI MUTASI BARANG SELESAI PRODUKSI' : 'BUKTI MUTASI ALUR / SURAT JALAN PROSES MESIN'}</h2>
           <div style="font-size: 13px; font-weight: 600; color: #1e293b; margin-top: 3px;">PT PADI MAKMUR SEJAHTERA • SISTEM KONTROL SCADA PABRIK</div>
           <div style="font-size: 11px; color: #475569;">Alamat Pabrik Penggilingan Beras Terpadu • Dokumen Sah Mutasi Pengeluaran</div>
         </div>
@@ -5936,20 +6187,20 @@ function printMutasiSlip(itemId) {
         <tr style="background: #f8fafc;">
           <td style="padding: 8px 12px; font-weight: bold; border: 1px solid #cbd5e1;">Tonase Awal (Masuk)</td>
           <td style="padding: 8px 12px; border: 1px solid #cbd5e1;">${item.tonase || 10} Ton</td>
-          <td style="padding: 8px 12px; font-weight: bold; border: 1px solid #cbd5e1;">Tonase Akhir (Selesai)</td>
-          <td style="padding: 8px 12px; font-weight: bold; color: #047857; border: 1px solid #cbd5e1;">${item.tonaseAkhir || item.tonase || 10} Ton</td>
+          <td style="padding: 8px 12px; font-weight: bold; border: 1px solid #cbd5e1;">${isCompleted ? 'Tonase Akhir (Selesai)' : 'Tonase Berjalan'}</td>
+          <td style="padding: 8px 12px; font-weight: bold; color: #047857; border: 1px solid #cbd5e1;">${item.tonaseAkhir || item.tonase || 10} Ton ${isCompleted ? '' : '(Sementara)'}</td>
         </tr>
         <tr>
-          <td style="padding: 8px 12px; font-weight: bold; border: 1px solid #cbd5e1;">Tujuan Mutasi Selesai</td>
+          <td style="padding: 8px 12px; font-weight: bold; border: 1px solid #cbd5e1;">${isCompleted ? 'Tujuan Mutasi Selesai' : 'Status / Posisi Mutasi'}</td>
           <td style="padding: 8px 12px; font-weight: bold; color: #0284c7; border: 1px solid #cbd5e1;">${locLabel}</td>
-          <td style="padding: 8px 12px; font-weight: bold; border: 1px solid #cbd5e1;">Waktu Selesai</td>
+          <td style="padding: 8px 12px; font-weight: bold; border: 1px solid #cbd5e1;">${isCompleted ? 'Waktu Selesai' : 'Waktu Saat Ini'}</td>
           <td style="padding: 8px 12px; border: 1px solid #cbd5e1;">${selesaiTime}</td>
         </tr>
         <tr style="background: #f8fafc;">
           <td style="padding: 8px 12px; font-weight: bold; border: 1px solid #cbd5e1;">Waktu Masuk Pertama</td>
           <td style="padding: 8px 12px; border: 1px solid #cbd5e1;">${masukTime}</td>
           <td style="padding: 8px 12px; font-weight: bold; border: 1px solid #cbd5e1;">Catatan Mutasi</td>
-          <td style="padding: 8px 12px; border: 1px solid #cbd5e1;">${escapeHtml(item.catatanSelesai || 'Selesai normal')}</td>
+          <td style="padding: 8px 12px; border: 1px solid #cbd5e1;">${escapeHtml(item.catatanSelesai || (isCompleted ? 'Selesai normal' : 'Sedang dalam alur permesinan'))}</td>
         </tr>
       </table>
 
@@ -5989,28 +6240,66 @@ function printMutasiSlip(itemId) {
 window.printMutasiSlip = printMutasiSlip;
 
 /**
- * CETAK REKAP LAPORAN MUTASI BARANG SELESAI
+ * CETAK REKAP LAPORAN MUTASI BARANG (PROSES & SELESAI)
  */
 function printMutasiReport() {
   const printArea = document.getElementById('printReportArea');
-  if (!printArea) return;
+  if (!printArea) {
+    showToast('⚠️ Area cetak tidak ditemukan!');
+    return;
+  }
 
-  const completedList = items.filter(i => i.status === 'completed');
-  const totalTon = completedList.reduce((sum, i) => sum + (parseFloat(i.tonaseAkhir || i.tonase) || 0), 0);
+  let reportList = [...items];
+  if (currentLogPadiFilter === 'active') {
+    reportList = reportList.filter(i => i.status === 'active' || i.status === 'stopped');
+  } else if (currentLogPadiFilter === 'standby') {
+    reportList = reportList.filter(i => i.status === 'standby' || !i.currentStepId);
+  } else if (currentLogPadiFilter === 'completed') {
+    reportList = reportList.filter(i => i.status === 'completed');
+  }
 
-  const rowsHtml = completedList.map((item, idx) => {
+  if (currentLogPadiSearch) {
+    reportList = reportList.filter(i => {
+      const code = (i.code || '').toLowerCase();
+      const supir = (i.supir || '').toLowerCase();
+      const truk = (i.truk || '').toLowerCase();
+      const jenis = (i.jenisPadi || i.jenis || '').toLowerCase();
+      const name = (i.name || '').toLowerCase();
+      return code.includes(currentLogPadiSearch) || 
+             supir.includes(currentLogPadiSearch) || 
+             truk.includes(currentLogPadiSearch) || 
+             jenis.includes(currentLogPadiSearch) || 
+             name.includes(currentLogPadiSearch);
+    });
+  }
+
+  if (reportList.length === 0) {
+    showToast('⚠️ Belum ada data mutasi yang sesuai filter untuk dicetak!');
+    return;
+  }
+
+  showToast(`🖨️ Membuka jendela cetak rekap mutasi (${reportList.length} batch)...`);
+
+  const totalTon = reportList.reduce((sum, i) => sum + (parseFloat(i.tonaseAkhir || i.tonase) || 0), 0);
+
+  const rowsHtml = reportList.map((item, idx) => {
+    const isCompleted = item.status === 'completed';
+    const curMachine = (item.assignedMachines && item.assignedMachines[item.currentStepId]) || (item.currentStepId === 'C-giling' ? `Giling (${item.gilingType || 'PK'})` : (item.currentStepId || 'Mesin'));
+    const locText = isCompleted
+      ? (item.selesaiLokasi === 'Mobil' ? 'Muat Truk' : 'Masuk Gudang')
+      : `Di ${curMachine}`;
     return `
       <tr>
         <td style="text-align: center;">${idx + 1}</td>
-        <td>${item.completedAt ? formatDateTimeShort(item.completedAt) : '-'}</td>
+        <td>${isCompleted && item.completedAt ? formatDateTimeShort(item.completedAt) : 'Sedang Proses'}</td>
         <td style="font-family: monospace; font-weight: bold;">${escapeHtml(item.code)}</td>
         <td>${escapeHtml(item.supir || '-')}</td>
         <td style="font-family: monospace;">${escapeHtml(item.truk || '-')}</td>
         <td>${escapeHtml(item.jenisPadi || item.jenis || 'Gabah')}</td>
         <td style="text-align: right;">${item.tonase || 10}T</td>
         <td style="text-align: right; font-weight: bold;">${item.tonaseAkhir || item.tonase || 10}T</td>
-        <td>${item.selesaiLokasi === 'Mobil' ? 'Muat Truk' : 'Masuk Gudang'}</td>
-        <td>${escapeHtml(item.catatanSelesai || 'Normal')}</td>
+        <td>${locText}</td>
+        <td>${escapeHtml(item.catatanSelesai || (isCompleted ? 'Selesai normal' : 'Dalam proses'))}</td>
       </tr>
     `;
   }).join('');
@@ -6019,12 +6308,12 @@ function printMutasiReport() {
     <div style="font-family: Arial, sans-serif; padding: 25px; color: #000;">
       <div style="border-bottom: 2px solid #000; padding-bottom: 10px; margin-bottom: 16px; display: flex; justify-content: space-between;">
         <div>
-          <h2 style="margin: 0; font-size: 18px;">REKAPITULASI MUTASI BARANG SELESAI GILING</h2>
-          <div style="font-size: 12px; color: #475569;">PT PADI MAKMUR SEJAHTERA • LOGISTIK &amp; GUDANG</div>
+          <h2 style="margin: 0; font-size: 18px;">REKAPITULASI LAPORAN MUTASI BARANG PABRIK</h2>
+          <div style="font-size: 12px; color: #475569;">PT PADI MAKMUR SEJAHTERA • LOGISTIK &amp; PENGGILINGAN PADI</div>
         </div>
         <div style="text-align: right; font-size: 11px;">
           <div>Tanggal Cetak: ${formatDateTime(new Date())}</div>
-          <div>Total Selesai: <strong>${completedList.length} Batch (${totalTon.toFixed(1)} Ton)</strong></div>
+          <div>Total Mutasi: <strong>${reportList.length} Batch (${totalTon.toFixed(1)} Ton)</strong></div>
         </div>
       </div>
 
@@ -6032,7 +6321,7 @@ function printMutasiReport() {
         <thead>
           <tr>
             <th>No</th>
-            <th>Waktu Selesai</th>
+            <th>Waktu Selesai / Status</th>
             <th>Kode</th>
             <th>Supir</th>
             <th>No. Truk</th>
@@ -6044,7 +6333,7 @@ function printMutasiReport() {
           </tr>
         </thead>
         <tbody>
-          ${rowsHtml.length > 0 ? rowsHtml : '<tr><td colspan="10" style="text-align:center;">Belum ada riwayat mutasi</td></tr>'}
+          ${rowsHtml.length > 0 ? rowsHtml : '<tr><td colspan="10" style="text-align:center;">Belum ada data mutasi</td></tr>'}
         </tbody>
       </table>
 
@@ -6065,7 +6354,9 @@ function printMutasiReport() {
     </div>
   `;
 
-  window.print();
+  setTimeout(() => {
+    window.print();
+  }, 150);
 }
 window.printMutasiReport = printMutasiReport;
 
@@ -6073,39 +6364,69 @@ window.printMutasiReport = printMutasiReport;
  * EKSPOR MUTASI KE FILE CSV
  */
 function exportMutasiCSV() {
-  const completedList = items.filter(i => i.status === 'completed');
-  if (completedList.length === 0) {
-    showToast('⚠️ Belum ada data barang selesai untuk diekspor!');
+  let exportList = [...items];
+  if (currentLogPadiFilter === 'active') {
+    exportList = exportList.filter(i => i.status === 'active' || i.status === 'stopped');
+  } else if (currentLogPadiFilter === 'standby') {
+    exportList = exportList.filter(i => i.status === 'standby' || !i.currentStepId);
+  } else if (currentLogPadiFilter === 'completed') {
+    exportList = exportList.filter(i => i.status === 'completed');
+  }
+
+  if (currentLogPadiSearch) {
+    exportList = exportList.filter(i => {
+      const code = (i.code || '').toLowerCase();
+      const supir = (i.supir || '').toLowerCase();
+      const truk = (i.truk || '').toLowerCase();
+      const jenis = (i.jenisPadi || i.jenis || '').toLowerCase();
+      const name = (i.name || '').toLowerCase();
+      return code.includes(currentLogPadiSearch) || 
+             supir.includes(currentLogPadiSearch) || 
+             truk.includes(currentLogPadiSearch) || 
+             jenis.includes(currentLogPadiSearch) || 
+             name.includes(currentLogPadiSearch);
+    });
+  }
+
+  if (exportList.length === 0) {
+    showToast('⚠️ Belum ada data mutasi untuk diekspor!');
     return;
   }
 
-  const headers = ['No', 'Kode Barang', 'Supir', 'Nomor Truk', 'Jenis Padi', 'Tonase Awal (T)', 'Tonase Akhir (T)', 'Tujuan Mutasi', 'Waktu Masuk', 'Waktu Selesai', 'Catatan'];
-  const rows = completedList.map((item, idx) => [
-    idx + 1,
-    `"${item.code || ''}"`,
-    `"${item.supir || ''}"`,
-    `"${item.truk || ''}"`,
-    `"${item.jenisPadi || item.jenis || ''}"`,
-    item.tonase || 10,
-    item.tonaseAkhir || item.tonase || 10,
-    `"${item.selesaiLokasi === 'Mobil' ? 'Muat Truk' : 'Masuk Gudang'}"`,
-    `"${item.masukAt ? formatDateTime(item.masukAt) : ''}"`,
-    `"${item.completedAt ? formatDateTime(item.completedAt) : ''}"`,
-    `"${item.catatanSelesai || ''}"`
-  ]);
+  const headers = ['No', 'Kode Barang', 'Supir', 'Nomor Truk', 'Jenis Padi', 'Tonase Awal (T)', 'Tonase Akhir (T)', 'Status / Tujuan Mutasi', 'Waktu Masuk', 'Waktu Selesai', 'Catatan'];
+  const rows = exportList.map((item, idx) => {
+    const isCompleted = item.status === 'completed';
+    const curMachine = (item.assignedMachines && item.assignedMachines[item.currentStepId]) || (item.currentStepId === 'C-giling' ? `Giling (${item.gilingType || 'PK'})` : (item.currentStepId || 'Mesin'));
+    const loc = isCompleted
+      ? (item.selesaiLokasi === 'Mobil' ? 'Muat Truk' : 'Masuk Gudang')
+      : `Sedang Proses di ${curMachine}`;
+    return [
+      idx + 1,
+      `"${item.code || ''}"`,
+      `"${item.supir || ''}"`,
+      `"${item.truk || ''}"`,
+      `"${item.jenisPadi || item.jenis || ''}"`,
+      item.tonase || 10,
+      item.tonaseAkhir || item.tonase || 10,
+      `"${loc}"`,
+      `"${item.masukAt ? formatDateTime(item.masukAt) : ''}"`,
+      `"${item.completedAt ? formatDateTime(item.completedAt) : '-'}"`,
+      `"${item.catatanSelesai || ''}"`
+    ];
+  });
 
   const csvContent = '\uFEFF' + [headers.join(','), ...rows.map(r => r.join(','))].join('\r\n');
   const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `mutasi_barang_selesai_${new Date().toISOString().slice(0, 10)}.csv`;
+  a.download = `mutasi_barang_${new Date().toISOString().slice(0, 10)}.csv`;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
 
-  showToast(`Berhasil mengunduh mutasi ${completedList.length} barang selesai!`);
+  showToast(`✅ Berhasil mengunduh CSV mutasi (${exportList.length} barang)!`);
 }
 window.exportMutasiCSV = exportMutasiCSV;
 
@@ -6474,11 +6795,11 @@ document.addEventListener('DOMContentLoaded', () => {
   // Restore saved floor fit mode (Default: 'fit' -> pas layar 100% tanpa geser)
   try {
     const savedFit = localStorage.getItem('monitoring_mesin_floor_fit_mode') || 'fit';
-    setFloorFitMode(savedFit);
+    setFloorFitMode(savedFit, false);
     const savedZoom = parseFloat(localStorage.getItem('monitoring_mesin_floor_zoom')) || 1.0;
     if (savedZoom !== 1.0) setFloorZoom(savedZoom);
   } catch (e) {
-    setFloorFitMode('fit');
+    setFloorFitMode('fit', false);
   }
 
   // Modal Keamanan Reset (Proteksi Sandi Supervisor)

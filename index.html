@@ -16,7 +16,7 @@
 <body>
   <div class="app-container">
     <!-- Interactive Plant Floor Plan (Denah Mesin Pabrik Sesuai Sketsa User) -->
-    <div class="floor-plan-card" id="factoryFloorPlan">
+    <div class="floor-plan-card fit-mode" id="factoryFloorPlan">
       <div class="floor-plan-top-bar">
         <div class="floor-plan-title-box">
           <div class="floor-plan-title">
@@ -29,23 +29,6 @@
         </div>
 
         <div class="floor-top-controls">
-          <!-- Fit Switcher: Pas di Layar (Tanpa Geser) vs Mode Geser -->
-          <div class="fit-switcher-pill" title="Atur Tampilan: Muat 1 Layar Penuh (Tanpa Geser) vs Mode Geser Lebar">
-            <button type="button" class="fit-btn active" id="btnFitScreen" onclick="setFloorFitMode('fit')" title="Muat seluruh denah langsung dalam 1 layar tanpa digeser">
-              Pas Layar
-            </button>
-            <button type="button" class="fit-btn" id="btnScrollScreen" onclick="setFloorFitMode('scroll')" title="Mode lebar dengan scroll geser horizontal">
-              Mode Geser
-            </button>
-          </div>
-
-          <!-- Zoom / Skala Denah -->
-          <div class="zoom-pill" title="Atur Skala Ukuran Denah Mesin">
-            <button type="button" class="zoom-btn" onclick="adjustFloorZoom(-0.05)" title="Perkecil (−)">−</button>
-            <span class="zoom-level" id="zoomLevelDisplay">100%</span>
-            <button type="button" class="zoom-btn" onclick="adjustFloorZoom(0.05)" title="Perbesar (+)">+</button>
-            <button type="button" class="zoom-btn reset" onclick="resetFloorZoom()" title="Reset Skala 100%">↺</button>
-          </div>
 
           <!-- Status Mesin Summary -->
           <div class="floor-status-summary">
@@ -212,6 +195,10 @@
           <div class="summary-item">
             <span class="summary-label">Berat / Tonase</span>
             <span class="summary-value" id="modalTonase">10.0 Ton</span>
+          </div>
+          <div class="summary-item" id="modalUlangContainer" style="display: none;">
+            <span class="summary-label">Pengulangan</span>
+            <span class="summary-value" id="modalUlangVal" style="color: #f59e0b; font-weight: 800;">Diulang 0x</span>
           </div>
         </div>
 
@@ -502,11 +489,11 @@
     </div>
   </div>
 
-  <!-- Modal Input Telah Selesai (Selesai Gudang) -->
+  <!-- Modal Input Pembikinan Mutasi Barang (Gudang / Mobil) -->
   <div class="modal-backdrop" id="completeModal">
     <div class="modal-dialog modal-small">
       <div class="modal-head">
-        <h2 class="modal-h2">Input Waktu Telah Selesai</h2>
+        <h2 class="modal-h2" id="completeModalTitle">Formulir Pembikinan &amp; Pencatatan Mutasi</h2>
         <button class="btn-close" id="btnCloseCompleteModal">&times;</button>
       </div>
 
@@ -514,44 +501,62 @@
         <input type="hidden" id="completeItemId">
 
         <div style="background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.3); border-radius: 8px; padding: 10px 14px; font-size: 13px; color: #6ee7b7;">
-          Menandai selesai barang: <strong id="completeItemInfo" style="color: #ffffff;">X1 - Barang Masuk 1</strong>
+          <span id="completeModalActionLabel">Pencatatan mutasi untuk:</span> <strong id="completeItemInfo" style="color: #ffffff;">X1 - Barang Masuk 1</strong>
         </div>
 
         <div class="input-field">
-          <label for="inputCompleteTime">Waktu Telah Selesai (Tanggal & Jam)</label>
+          <label for="inputCompleteTime">Waktu Mutasi (Tanggal &amp; Jam)</label>
           <input type="datetime-local" id="inputCompleteTime" required>
         </div>
 
         <div class="input-field">
-          <label>Tujuan Penempatan Selesai</label>
+          <label>Tujuan Mutasi (Penempatan Akhir)</label>
           <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 4px;">
             <label style="display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-radius: 8px; border: 1px solid var(--border-glass); background: var(--bg-glass-input); cursor: pointer; font-size: 13px; font-weight: 600;">
               <input type="radio" name="completeLocationRadio" value="Gudang" checked style="accent-color: #10b981; width: 16px; height: 16px; cursor: pointer;">
-              <span>Taruh di Gudang</span>
+              <span>Masuk Gudang</span>
             </label>
             <label style="display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-radius: 8px; border: 1px solid var(--border-glass); background: var(--bg-glass-input); cursor: pointer; font-size: 13px; font-weight: 600;">
               <input type="radio" name="completeLocationRadio" value="Mobil" style="accent-color: #38bdf8; width: 16px; height: 16px; cursor: pointer;">
-              <span>Langsung di Mobil</span>
+              <span>Langsung Muat Mobil / Truk</span>
             </label>
           </div>
         </div>
 
         <div class="input-row">
           <div class="input-field">
-            <label for="inputCompleteNote">Keterangan Mutu / Plat Mobil</label>
+            <label for="inputCompleteNote">Keterangan Mutasi / Mutu / Plat Truk</label>
             <input type="text" id="inputCompleteNote" placeholder="Contoh: Beras Premium Super / Truk B 1234 CD">
           </div>
           <div class="input-field">
-            <label for="inputCompleteTonase">Tonase Akhir (Ton)</label>
+            <label for="inputCompleteTonase">Tonase Akhir Mutasi (Ton)</label>
             <input type="number" step="0.1" id="inputCompleteTonase" placeholder="14.2">
           </div>
         </div>
 
         <div class="form-buttons">
           <button type="button" class="btn btn-outline" id="btnCancelComplete">Batal</button>
-          <button type="submit" class="btn btn-add" style="background: #059669; border: none;">Simpan Telah Selesai</button>
+          <button type="submit" class="btn btn-add" id="btnSubmitComplete" style="background: #059669; border: none;">Simpan &amp; Buat Mutasi</button>
         </div>
       </form>
+    </div>
+  </div>
+
+  <!-- Modal Pilih Barang untuk Pembikinan Mutasi Langsung -->
+  <div class="modal-backdrop" id="pilihMutasiModal">
+    <div class="modal-dialog modal-small">
+      <div class="modal-head">
+        <h2 class="modal-h2">Pilih Barang untuk Buat Mutasi</h2>
+        <button class="btn-close" id="btnClosePilihMutasiModal" onclick="closePilihMutasiModal()">&times;</button>
+      </div>
+      <div class="modal-content">
+        <div style="font-size: 12px; color: var(--text-lavender); margin-bottom: 10px; line-height: 1.5;">
+          Pilih barang yang ingin dibuatkan mutasinya (ke Gudang atau Muat Truk). Barang <strong>tidak harus menunggu seluruh alur selesai</strong>:
+        </div>
+        <div id="pilihMutasiItemsList" style="display: flex; flex-direction: column; gap: 8px; max-height: 320px; overflow-y: auto; padding-right: 4px;">
+          <!-- Diisi oleh JS -->
+        </div>
+      </div>
     </div>
   </div>
 

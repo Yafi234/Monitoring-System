@@ -81,8 +81,8 @@ function getMachineUnitOccupancy(stepId, machineUnitName, excludeItemId = null) 
 
 function getEligibleItemsForMachine(stepId, machineName) {
   const result = [];
-  // 3. Alur Pengulangan
-  if (stepId === 'B-dryer' || stepId === 'A-silo') {
+  // 3. Alur Pengulangan (Hanya Silo Basah)
+  if (stepId === 'A-silo') {
     const processedSkUnits = new Set();
     const skItems = items.filter(i => i.currentStepId === 'C-silo' && (i.status === 'active' || i.status === 'stopped'));
 
@@ -108,16 +108,23 @@ function getEligibleItemsForMachine(stepId, machineName) {
   return result;
 }
 
-// Test 1: getEligibleItemsForMachine on B-dryer
+// Test 1: getEligibleItemsForMachine on B-dryer (should be 0) and A-silo (should be 1)
 const eligDryer = getEligibleItemsForMachine('B-dryer', 'Dryer 3');
-console.log('Eligible items for Dryer 3:', eligDryer.length);
-if (eligDryer.length !== 1 || !eligDryer[0].isGroup || eligDryer[0].totalTonase !== 22) {
-  console.error('FAIL: Expected 1 grouped entry with 22 Ton');
+console.log('Eligible items for Dryer 3 (should be 0):', eligDryer.length);
+if (eligDryer.length !== 0) {
+  console.error('FAIL: Dryer should not accept direct recycle anymore');
   process.exit(1);
 }
-console.log('PASS: getEligibleItemsForMachine correctly identified wet group from Silo Kering 2 (22 Ton)');
 
-// Test 2: assignExistingItemToMachine recycling flow
+const eligSB = getEligibleItemsForMachine('A-silo', 'Silo Basah 2');
+console.log('Eligible items for Silo Basah 2:', eligSB.length);
+if (eligSB.length !== 1 || !eligSB[0].isGroup || eligSB[0].totalTonase !== 22) {
+  console.error('FAIL: Expected 1 grouped entry with 22 Ton for Silo Basah');
+  process.exit(1);
+}
+console.log('PASS: getEligibleItemsForMachine correctly identified wet group for Silo Basah 2 (22 Ton)');
+
+// Test 2: assignExistingItemToMachine recycling flow to A-silo
 function assignExistingItemToMachine(itemId, targetStepId, selectedMachine) {
   const item = items.find(i => i.id === itemId);
   if (!item) return;
@@ -136,7 +143,7 @@ function assignExistingItemToMachine(itemId, targetStepId, selectedMachine) {
   const oldStepId = item.currentStepId;
   const oldMachine = item.assignedMachines?.[oldStepId] || oldStepId;
   const targetIdx = getSubstepIndex(targetStepId);
-  const isRecyclingFlow = (oldStepId === 'C-silo' && (targetStepId === 'B-dryer' || targetStepId === 'A-silo'));
+  const isRecyclingFlow = (oldStepId === 'C-silo' && targetStepId === 'A-silo');
 
   coItems.forEach((currItem) => {
     const itOldStepId = currItem.currentStepId;
@@ -177,16 +184,16 @@ function assignExistingItemToMachine(itemId, targetStepId, selectedMachine) {
   });
 }
 
-assignExistingItemToMachine('it-1', 'B-dryer', 'Dryer 3');
+assignExistingItemToMachine('it-1', 'A-silo', 'Silo Basah 2');
 
-console.log('After assignExistingItemToMachine to Dryer 3:');
-console.log('Item 1 step:', items[0].currentStepId, 'machine:', items[0].assignedMachines['B-dryer'], 'recycleCount:', items[0].recycleCount);
-console.log('Item 2 step:', items[1].currentStepId, 'machine:', items[1].assignedMachines['B-dryer'], 'recycleCount:', items[1].recycleCount);
-console.log('Dryer occupancy:', getMachineUnitOccupancy('B-dryer', 'Dryer 3'));
+console.log('After assignExistingItemToMachine to Silo Basah 2:');
+console.log('Item 1 step:', items[0].currentStepId, 'machine:', items[0].assignedMachines['A-silo'], 'recycleCount:', items[0].recycleCount);
+console.log('Item 2 step:', items[1].currentStepId, 'machine:', items[1].assignedMachines['A-silo'], 'recycleCount:', items[1].recycleCount);
+console.log('Silo Basah occupancy:', getMachineUnitOccupancy('A-silo', 'Silo Basah 2'));
 
-if (items[0].currentStepId !== 'B-dryer' || items[1].currentStepId !== 'B-dryer' || items[0].recycleCount !== 1) {
+if (items[0].currentStepId !== 'A-silo' || items[1].currentStepId !== 'A-silo' || items[0].recycleCount !== 1) {
   console.error('FAIL: Items did not move together or recycleCount was not updated');
   process.exit(1);
 }
 
-console.log('PASS: Both co-located items recycled to Dryer 3 together with updated recycleCount & logs!');
+console.log('PASS: Both co-located items recycled to Silo Basah 2 together with updated recycleCount & logs!');

@@ -27,13 +27,29 @@ function getMachineUnitOccupancy(stepId, machineUnitName, excludeItemId = null) 
     return id === excludeItemId;
   };
 
-  const matchingItems = items.filter(i => 
-    !isExcluded(i.id) &&
-    i.currentStepId === stepId &&
-    (i.status === 'active' || i.status === 'stopped') &&
-    i.assignedMachines &&
-    i.assignedMachines[stepId] === machineUnitName
-  );
+  const normMachine = (name) => {
+    if (!name) return '';
+    return name.replace(/^SK\s*/i, 'Silo Kering ').trim();
+  };
+  const targetNorm = normMachine(machineUnitName);
+
+  const matchingItems = items.filter(i => {
+    if (isExcluded(i.id)) return false;
+    if (i.status !== 'active' && i.status !== 'stopped') return false;
+
+    if (i.currentStepId === stepId && i.assignedMachines && normMachine(i.assignedMachines[stepId]) === targetNorm) {
+      return true;
+    }
+
+    if (stepId === 'C-silo' && i.currentStepId === 'C-giling' && i.isQueuedForGiling) {
+      const originSilo = i.assignedMachines?.['C-silo'] || i.stepHistory?.['C-silo']?.machine;
+      if (originSilo && normMachine(originSilo) === targetNorm) {
+        return true;
+      }
+    }
+
+    return false;
+  });
 
   const totalTonase = matchingItems.reduce((acc, it) => acc + (parseFloat(it.tonase) || 0), 0);
   const roundedTotal = Math.round(totalTonase * 10) / 10;
@@ -50,6 +66,19 @@ function getMachineUnitOccupancy(stepId, machineUnitName, excludeItemId = null) 
     isFull,
     percent
   };
+}
+
+function promoteNextGilingQueue() {
+  const queuedItem = items.find(i => i.currentStepId === 'C-giling' && i.isQueuedForGiling && (i.status === 'active' || i.status === 'stopped'));
+  if (queuedItem) {
+    queuedItem.isQueuedForGiling = false;
+    const nowIso = new Date().toISOString();
+    if (queuedItem.stepHistory && queuedItem.stepHistory['C-giling']) {
+      queuedItem.stepHistory['C-giling'].startedAt = nowIso;
+    }
+    return queuedItem;
+  }
+  return null;
 }
 
 function getCoLocatedItems(item) {
@@ -252,7 +281,9 @@ if (!moveGiling.success || moveGiling.movedCount !== 2) throw new Error('SK 3 mo
 
 const sk3AfterGiling = getMachineUnitOccupancy('C-silo', 'Silo Kering 3');
 console.log('After move: SK 3 count =', sk3AfterGiling.count, 'tonase =', sk3AfterGiling.totalTonase);
-if (sk3AfterGiling.count !== 0) throw new Error('SK 3 must be empty after moving to Giling');
+if (sk3AfterGiling.count !== 1 || sk3AfterGiling.totalTonase !== 14) {
+  throw new Error(`SK 3 must still retain queued batch A2 (14T)! Actual count=${sk3AfterGiling.count}, tonase=${sk3AfterGiling.totalTonase}`);
+}
 
 const itemA1 = items.find(i => i.id === 'A1');
 const itemA2 = items.find(i => i.id === 'A2');
@@ -263,8 +294,13 @@ if (itemA1.isQueuedForGiling !== false || itemA2.isQueuedForGiling !== true) thr
 // Complete or advance A1 to Packing
 console.log('Now advancing Item A1 to Packing...');
 executeStepAdvance('A1', 'D-packing', 'Packing 1');
+promoteNextGilingQueue();
 console.log('Item A2 status after A1 departs: isQueued =', itemA2.isQueuedForGiling, 'startedAt =', itemA2.stepHistory['C-giling'].startedAt);
 if (itemA2.isQueuedForGiling !== false) throw new Error('Item A2 was not promoted to active in Giling');
+
+const sk3AfterPromo = getMachineUnitOccupancy('C-silo', 'Silo Kering 3');
+console.log('SK 3 after A2 promoted to active: count =', sk3AfterPromo.count, 'tonase =', sk3AfterPromo.totalTonase);
+if (sk3AfterPromo.count !== 0 || sk3AfterPromo.totalTonase !== 0) throw new Error('SK 3 should now be empty after A2 is promoted to active!');
 
 console.log('STEP 3 PASSED: Silo Kering batches moved together to Giling with correct sequential queuing!\n');
 console.log('ALL THREE STAGES (SILO BASAH, DRYER, SILO KERING) FULLY VERIFIED AND PASSING 100%!');
